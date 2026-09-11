@@ -1,0 +1,40 @@
+# ── Secrets — never commit ─────────────────────────────────────────────
+ThetaData/api.key
+ThetaData/creds.txt
+*.key
+*.pem
+.env
+.env.local
+.env.*.local
+
+# ── ThetaData generated / downloaded artifacts ─────────────────────────
+# The terminal jar + extracted lib are downloadable; config is regenerated on launch.
+ThetaData/ThetaTerminalv3.jar
+ThetaData/lib/
+ThetaData/config.toml
+
+# ── Reference / scratch (not part of the app) ──────────────────────────
+Temp/
+
+# ── C# / .NET ──────────────────────────────────────────────────────────
+**/bin/
+**/obj/
+*.user
+*.suo
+*.userprefs
+Logs/
+*.log
+
+# ── Node / Next.js ─────────────────────────────────────────────────────
+node_modules/
+.next/
+out/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── OS / editor ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
