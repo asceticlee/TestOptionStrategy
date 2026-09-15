@@ -38,6 +38,20 @@ namespace TestOptionStrategy.Server.Common
                 result.Price = optionType == OptionType.Call ? Math.Max(spotPrice - strike, 0) : Math.Max(strike - spotPrice, 0);
                 return result;
             }
+            if (sigma <= 0 || double.IsNaN(sigma) || double.IsInfinity(sigma) || spotPrice <= 0 || strike <= 0)
+            {
+                if (optionType == OptionType.Call)
+                {
+                    result.Price = Math.Max(spotPrice - strike, 0);
+                    result.Delta = spotPrice > strike ? 1 : 0;
+                }
+                else
+                {
+                    result.Price = Math.Max(strike - spotPrice, 0);
+                    result.Delta = spotPrice < strike ? -1 : 0;
+                }
+                return result;
+            }
 
             double sqrtT = Math.Sqrt(time);
             double d1 = (Math.Log(spotPrice / strike) + (riskFreeRate + sigma * sigma / 2.0) * time) / (sigma * sqrtT);

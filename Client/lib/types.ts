@@ -1,3 +1,12 @@
+export interface Leg {
+  id: number;
+  side: "long" | "short";
+  right: "call" | "put";
+  expiration: string;
+  strike: number;
+  contracts: number;
+}
+
 export interface OptionLegRequest {
   right: "call" | "put";
   strike: number;
@@ -29,6 +38,37 @@ export interface SpotLinePoint {
   x: number;
   y: string;
   z: number;
+}
+
+export interface QuoteSummary {
+  spot: number;
+  previousClose: number;
+}
+
+export interface StatsLeg {
+  right: string;
+  strike: number;
+  expiration: string;
+  contracts: number;
+  impliedVol: number;
+  entryPrice: number;
+  bid: number;
+  ask: number;
+  delta: number;
+  theta: number;
+  vega: number;
+  gamma: number;
+  underlyingPrice: number;
+}
+
+export interface StatsResponse {
+  snapshotSpot: number;
+  riskFreeRate: number;
+  netDebit: number;
+  maxProfit: number;
+  maxLoss: number;
+  breakevens: number[];
+  legs: StatsLeg[];
 }
 
 export interface SurfaceResponse {

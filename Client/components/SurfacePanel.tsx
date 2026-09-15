@@ -58,11 +58,18 @@ export default function SurfacePanel({ data, title, zTitle }: SurfacePanelProps)
 
       divRegistry.push({ id, plotly: plt });
 
+      const yLabels = data.y;
+      const yIndex = new Map<string, number>();
+      yLabels.forEach((label, i) => yIndex.set(label, i));
+
       const surface = {
         x: data.x,
-        y: data.y,
+        y: yLabels.map((_, i) => i),
         z: data.z,
+        customdata: data.z.map((row, i) => row.map(() => yLabels[i])),
         type: "surface",
+        hovertemplate:
+          "Spot: %{x:.2f}<br>Time: %{customdata}<br>Value: %{z:.2f}<extra></extra>",
         contours: {
           x: { show: true, color: "black" },
           y: { show: true, color: "black" },
@@ -72,27 +79,61 @@ export default function SurfacePanel({ data, title, zTitle }: SurfacePanelProps)
 
       const line = {
         x: data.spotLine.map((p) => p.x),
-        y: data.spotLine.map((p) => p.y),
+        y: data.spotLine.map((p) => yIndex.get(p.y) ?? 0),
         z: data.spotLine.map((p) => p.z),
+        customdata: data.spotLine.map((p) => p.y),
         type: "scatter3d",
         mode: "lines",
+        hovertemplate:
+          "Spot: %{x:.2f}<br>Time: %{customdata}<br>Value: %{z:.2f}<extra></extra>",
         line: { width: 5, color: "orange" },
       };
 
+      const tickStep = Math.max(1, Math.ceil(yLabels.length / 50));
+      const tickvals: number[] = [];
+      const ticktext: string[] = [];
+      for (let i = 0; i < yLabels.length; i += tickStep) {
+        tickvals.push(i);
+        ticktext.push(yLabels[i].slice(5));
+      }
+      const lastIndex = yLabels.length - 1;
+      if (
+        lastIndex >= 0 &&
+        tickvals.length > 0 &&
+        tickvals[tickvals.length - 1] !== lastIndex
+      ) {
+        tickvals.push(lastIndex);
+        ticktext.push(yLabels[lastIndex].slice(5));
+      }
+
       const layout = {
-        title,
+        title: { text: title, font: { color: "#e8eaf2" } },
         autosize: true,
         width: 1000,
         height: 760,
+        paper_bgcolor: "#04041f",
+        font: { color: "#cfd4e6" },
         scene: {
           camera: { eye: { x: 0.5, y: -1, z: 1.5 } },
-          xaxis: { title: "Spot Price", tickfont: { size: 10, color: "black" } },
-          yaxis: {
-            tickformat: "%Y%m%d %H:%M",
-            title: "",
-            tickfont: { size: 10, color: "black" },
+          xaxis: {
+            title: "Spot Price",
+            titlefont: { color: "#9aa1b5" },
+            tickfont: { size: 10, color: "#9aa1b5" },
+            gridcolor: "#26264a",
           },
-          zaxis: { title: zTitle, tickfont: { size: 10, color: "black" } },
+          yaxis: {
+            title: "",
+            tickvals,
+            ticktext,
+            tickfont: { size: 8, color: "#9aa1b5" },
+            gridcolor: "#26264a",
+          },
+          zaxis: {
+            title: zTitle,
+            titlefont: { color: "#9aa1b5" },
+            tickfont: { size: 10, color: "#9aa1b5" },
+            gridcolor: "#26264a",
+          },
         },
       };
 
@@ -118,7 +159,7 @@ export default function SurfacePanel({ data, title, zTitle }: SurfacePanelProps)
     };
   }, [data, title, zTitle]);
 
-  return <div ref={containerRef} />;
+  return <div ref={containerRef} className="chart" />;
 }
 
 function syncCamera(plotly: PlotlyLike, sourceId: string, eventData: unknown) {

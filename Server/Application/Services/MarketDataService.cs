@@ -60,6 +60,19 @@ namespace TestOptionStrategy.Server.Application.Services
             return 0;
         }
 
+        public async Task<(double Spot, double PreviousClose)> GetQuoteSummaryAsync(string symbol, DateTime snapshotUtc)
+        {
+            double spot = await GetSpotAtSnapshotAsync(symbol, snapshotUtc);
+            DateOnly snapshotDay = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(snapshotUtc, Common.MarketClock.GetUsTimeZone()));
+            List<(DateOnly Day, double Close)> eod = await _thetaData.GetStockEodAsync(symbol, snapshotDay.AddDays(-10), snapshotDay.AddDays(-1));
+            double previousClose = 0;
+            if (eod.Count > 0)
+            {
+                previousClose = eod[^1].Close;
+            }
+            return (spot, previousClose);
+        }
+
         public async Task<OptionGreeksRow?> GetOptionGreeksAtSnapshotAsync(
             string symbol,
             DateOnly expiration,
@@ -78,6 +91,26 @@ namespace TestOptionStrategy.Server.Application.Services
                 .OrderBy(r => Math.Abs((r.TimestampUtc - snapshotUtc).TotalSeconds))
                 .FirstOrDefault();
             return best;
+        }
+
+        public async Task<List<OptionGreeksRow>> GetOptionGreeksSeriesAsync(
+            string symbol,
+            DateOnly expiration,
+            double strike,
+            string right,
+            DateOnly startDate,
+            DateOnly endDate,
+            string interval)
+        {
+            List<OptionGreeksRow> rows = await _thetaData.GetOptionGreeksFirstOrderAsync(
+                symbol, expiration, strike, right, startDate, endDate, interval);
+            await StoreOptionGreeksAsync(symbol, expiration, strike, right, rows);
+            return rows;
+        }
+
+        public async Task<List<(DateOnly Date, string Type)>> GetYearHolidaysAsync(int year)
+        {
+            return await _thetaData.GetYearHolidaysAsync(year);
         }
 
         public async Task<double> GetRiskFreeRateAsync(DateOnly day)

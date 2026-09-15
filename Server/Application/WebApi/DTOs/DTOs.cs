@@ -20,6 +20,14 @@ namespace TestOptionStrategy.Server.Application.WebApi.DTOs
         public List<OptionLegRequest> Legs { get; set; } = new List<OptionLegRequest>();
     }
 
+    public class LegGreeksRequest
+    {
+        public string Symbol { get; set; } = "SPY";
+        public string SnapshotDate { get; set; } = string.Empty;
+        public string SnapshotTime { get; set; } = string.Empty;
+        public OptionLegRequest Leg { get; set; } = new OptionLegRequest();
+    }
+
     public class OptionLegResult
     {
         public string Right { get; set; } = string.Empty;
@@ -35,6 +43,40 @@ namespace TestOptionStrategy.Server.Application.WebApi.DTOs
         public double X { get; set; }
         public string Y { get; set; } = string.Empty;
         public double Z { get; set; }
+    }
+
+    public class QuoteSummaryDto
+    {
+        public double Spot { get; set; }
+        public double PreviousClose { get; set; }
+    }
+
+    public class StatsLegResult
+    {
+        public string Right { get; set; } = string.Empty;
+        public double Strike { get; set; }
+        public string Expiration { get; set; } = string.Empty;
+        public int Contracts { get; set; }
+        public double ImpliedVol { get; set; }
+        public double EntryPrice { get; set; }
+        public double Bid { get; set; }
+        public double Ask { get; set; }
+        public double Delta { get; set; }
+        public double Theta { get; set; }
+        public double Vega { get; set; }
+        public double Gamma { get; set; }
+        public double UnderlyingPrice { get; set; }
+    }
+
+    public class StatsResponse
+    {
+        public double SnapshotSpot { get; set; }
+        public double RiskFreeRate { get; set; }
+        public double NetDebit { get; set; }
+        public double MaxProfit { get; set; }
+        public double MaxLoss { get; set; }
+        public List<double> Breakevens { get; set; } = new List<double>();
+        public List<StatsLegResult> Legs { get; set; } = new List<StatsLegResult>();
     }
 
     public class SurfaceResponse

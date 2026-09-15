@@ -13,6 +13,10 @@ ThetaData/ThetaTerminalv3.jar
 ThetaData/lib/
 ThetaData/config.toml
 
+# ── Deploy runtime artifacts ──────────────────────────────────────────
+Deploy/logs/
+Deploy/*.pid
+
 # ── Reference / scratch (not part of the app) ──────────────────────────
 Temp/
 

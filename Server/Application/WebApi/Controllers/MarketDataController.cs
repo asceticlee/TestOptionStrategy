@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using TestOptionStrategy.Server.Application.Services;
+using TestOptionStrategy.Server.Application.WebApi.DTOs;
 using TestOptionStrategy.Server.Common;
 
 namespace TestOptionStrategy.Server.Application.WebApi.Controllers
@@ -64,6 +65,24 @@ namespace TestOptionStrategy.Server.Application.WebApi.Controllers
             DateTime snapshotUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(eastern, DateTimeKind.Unspecified), timeZone);
             double spot = await _marketData.GetSpotAtSnapshotAsync(symbol, snapshotUtc);
             return Ok(spot);
+        }
+
+        [HttpGet("quote-summary")]
+        public async Task<IActionResult> GetQuoteSummary([FromQuery] string symbol, [FromQuery] string date, [FromQuery] string time)
+        {
+            if (string.IsNullOrWhiteSpace(symbol))
+            {
+                return BadRequest("symbol is required");
+            }
+            if (!DateOnly.TryParse(date, out DateOnly day) || !TimeSpan.TryParse(time, out TimeSpan timeOfDay))
+            {
+                return BadRequest("date must be YYYY-MM-DD and time HH:mm");
+            }
+            TimeZoneInfo timeZone = MarketClock.GetUsTimeZone();
+            DateTime eastern = new DateTime(day.Year, day.Month, day.Day, timeOfDay.Hours, timeOfDay.Minutes, timeOfDay.Seconds);
+            DateTime snapshotUtc = TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(eastern, DateTimeKind.Unspecified), timeZone);
+            (double spot, double previousClose) = await _marketData.GetQuoteSummaryAsync(symbol, snapshotUtc);
+            return Ok(new QuoteSummaryDto { Spot = spot, PreviousClose = previousClose });
         }
     }
 }

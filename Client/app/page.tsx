@@ -1,26 +1,26 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import DateStrip from "../components/DateStrip";
+import LegConfigPanel from "../components/LegConfigPanel";
+import StatsStrip from "../components/StatsStrip";
+import StrikeRuler from "../components/StrikeRuler";
 import SurfacePanel from "../components/SurfacePanel";
 import {
+  computeRealSurface,
+  computeStats,
   computeSurface,
   fetchExpirations,
-  fetchSpot,
+  fetchQuoteSummary,
   fetchStrikes,
   fetchUnderlyings,
 } from "../lib/api";
 import type {
+  Leg,
   OptionLegRequest,
+  StatsResponse,
   SurfaceResponse,
 } from "../lib/types";
-
-interface Leg {
-  side: "long" | "short";
-  right: "call" | "put";
-  expiration: string;
-  strike: number;
-  contracts: number;
-}
 
 function toDateInput(d: Date): string {
   const y = d.getFullYear();
@@ -38,6 +38,55 @@ function lastCompletedTradingDay(): string {
   return toDateInput(d);
 }
 
+function cap(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+function strategyName(legs: Leg[]): string {
+  if (legs.length === 0) return "Custom Strategy";
+  if (legs.length === 1) {
+    return `${cap(legs[0].side)} ${cap(legs[0].right)}`;
+  }
+  const calls = legs.filter((l) => l.right === "call").length;
+  const puts = legs.filter((l) => l.right === "put").length;
+  if (
+    legs.length === 2 &&
+    legs[0].right === legs[1].right &&
+    legs[0].side === legs[1].side
+  ) {
+    return `${cap(legs[0].side)} ${cap(legs[0].right)} Spread`;
+  }
+  if (legs.length === 4 && calls === 2 && puts === 2) {
+    return "Iron Condor";
+  }
+  return "Custom Strategy";
+}
+
+function toLegRequests(legs: Leg[]): OptionLegRequest[] {
+  return legs.map((leg) => ({
+    right: leg.right,
+    strike: leg.strike,
+    expiration: leg.expiration,
+    contracts:
+      leg.side === "short" ? -Math.abs(leg.contracts) : Math.abs(leg.contracts),
+  }));
+}
+
+function nearestToSpot(list: number[], spot: number | null): number {
+  if (list.length === 0) return 0;
+  if (spot == null) return list[Math.floor(list.length / 2)];
+  let best = list[0];
+  let bestDist = Math.abs(best - spot);
+  for (const s of list) {
+    const d = Math.abs(s - spot);
+    if (d < bestDist) {
+      best = s;
+      bestDist = d;
+    }
+  }
+  return best;
+}
+
 export default function Page() {
   const [symbol, setSymbol] = useState<string>("SPY");
   const [date, setDate] = useState<string>(lastCompletedTradingDay());
@@ -53,9 +102,15 @@ export default function Page() {
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
   const [response, setResponse] = useState<SurfaceResponse | null>(null);
+  const [stats, setStats] = useState<StatsResponse | null>(null);
   const [snapshotSpot, setSnapshotSpot] = useState<number | null>(null);
+  const [previousClose, setPreviousClose] = useState<number | null>(null);
+  const [view, setView] = useState<"trade" | "theoretical" | "real">("trade");
+  const [realResponse, setRealResponse] = useState<SurfaceResponse | null>(null);
+  const [realLoading, setRealLoading] = useState<boolean>(false);
 
   const loadedExpirations = useRef<Set<string>>(new Set());
+  const idCounter = useRef(0);
 
   const availableExpirations = expirations.filter((exp) => exp >= date);
 
@@ -117,22 +172,28 @@ export default function Page() {
       prev.map((leg) => {
         const list = strikesByExpiration[leg.expiration];
         if (list && list.length > 0 && !list.includes(leg.strike)) {
-          return { ...leg, strike: list[0] };
+          return { ...leg, strike: nearestToSpot(list, snapshotSpot) };
         }
         return leg;
       }),
     );
-  }, [strikesByExpiration]);
+  }, [strikesByExpiration, snapshotSpot]);
 
   useEffect(() => {
     if (!symbol || !date || !time) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        const s = await fetchSpot(symbol, date, time);
-        if (!cancelled) setSnapshotSpot(s > 0 ? s : null);
+        const qs = await fetchQuoteSummary(symbol, date, time);
+        if (!cancelled) {
+          setSnapshotSpot(qs.spot > 0 ? qs.spot : null);
+          setPreviousClose(qs.previousClose > 0 ? qs.previousClose : null);
+        }
       } catch {
-        if (!cancelled) setSnapshotSpot(null);
+        if (!cancelled) {
+          setSnapshotSpot(null);
+          setPreviousClose(null);
+        }
       }
     }, 400);
     return () => {
@@ -141,14 +202,56 @@ export default function Page() {
     };
   }, [symbol, date, time]);
 
+  useEffect(() => {
+    const validLegs = legs.filter((l) => l.expiration && l.strike > 0);
+    if (validLegs.length === 0) {
+      setStats(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await computeStats({
+          symbol,
+          snapshotDate: date,
+          snapshotTime: time,
+          spotShares: 0,
+          timeStepMinutes,
+          spotSamples,
+          spotRangePercent,
+          legs: toLegRequests(validLegs),
+        });
+        if (!cancelled) setStats(result);
+      } catch {
+        if (!cancelled) setStats(null);
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [symbol, date, time, legs, timeStepMinutes, spotSamples, spotRangePercent]);
+
   const addLeg = useCallback(() => {
-    const exp = availableExpirations[0] ?? "";
+    const exp =
+      (legs.length > 0 && legs[legs.length - 1].expiration) ||
+      availableExpirations[0] ||
+      "";
     loadStrikes(exp);
+    const defaultStrike = nearestToSpot(strikesByExpiration[exp] ?? [], snapshotSpot);
+    const nextId = idCounter.current++;
     setLegs((prev) => [
       ...prev,
-      { side: "long", right: "call", expiration: exp, strike: 0, contracts: 1 },
+      {
+        id: nextId,
+        side: "long",
+        right: "call",
+        expiration: exp,
+        strike: defaultStrike,
+        contracts: 1,
+      } as Leg,
     ]);
-  }, [availableExpirations, loadStrikes]);
+  }, [legs, availableExpirations, loadStrikes, strikesByExpiration, snapshotSpot]);
 
   const updateLeg = useCallback((index: number, patch: Partial<Leg>) => {
     setLegs((prev) =>
@@ -184,13 +287,6 @@ export default function Page() {
         return;
       }
     }
-    const legRequests: OptionLegRequest[] = legs.map((leg) => ({
-      right: leg.right,
-      strike: leg.strike,
-      expiration: leg.expiration,
-      contracts:
-        leg.side === "short" ? -Math.abs(leg.contracts) : Math.abs(leg.contracts),
-    }));
     setLoading(true);
     try {
       const result = await computeSurface({
@@ -201,9 +297,10 @@ export default function Page() {
         timeStepMinutes,
         spotSamples,
         spotRangePercent,
-        legs: legRequests,
+        legs: toLegRequests(legs),
       });
       setResponse(result);
+      setView("theoretical");
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -218,6 +315,60 @@ export default function Page() {
     spotSamples,
     spotRangePercent,
   ]);
+
+  const handleComputeReal = useCallback(async () => {
+    setError("");
+    if (legs.length === 0) {
+      setError("Add at least one option leg.");
+      return;
+    }
+    for (const leg of legs) {
+      if (!leg.expiration) {
+        setError("Each option leg needs an expiration date.");
+        return;
+      }
+      if (!leg.strike || leg.strike <= 0) {
+        setError("Each option leg needs a strike.");
+        return;
+      }
+    }
+    setRealLoading(true);
+    try {
+      const result = await computeRealSurface({
+        symbol,
+        snapshotDate: date,
+        snapshotTime: time,
+        spotShares: 0,
+        timeStepMinutes,
+        spotSamples,
+        spotRangePercent,
+        legs: toLegRequests(legs),
+      });
+      setRealResponse(result);
+      setView("real");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRealLoading(false);
+    }
+  }, [
+    symbol,
+    date,
+    time,
+    legs,
+    timeStepMinutes,
+    spotSamples,
+    spotRangePercent,
+  ]);
+
+  const spotChange =
+    snapshotSpot != null && previousClose != null
+      ? snapshotSpot - previousClose
+      : null;
+  const spotChangePct =
+    spotChange != null && previousClose
+      ? (spotChange / previousClose) * 100
+      : null;
 
   const valueData = response
     ? {
@@ -244,183 +395,293 @@ export default function Page() {
       }
     : null;
 
+  const realValueData = realResponse
+    ? {
+        x: realResponse.spotPrices,
+        y: realResponse.timestamps,
+        z: realResponse.valueSurface,
+        spotLine: realResponse.spotLineValue,
+      }
+    : null;
+  const realDeltaData = realResponse
+    ? {
+        x: realResponse.spotPrices,
+        y: realResponse.timestamps,
+        z: realResponse.deltaSurface,
+        spotLine: realResponse.spotLineDelta,
+      }
+    : null;
+  const realGammaData = realResponse
+    ? {
+        x: realResponse.spotPrices,
+        y: realResponse.timestamps,
+        z: realResponse.gammaSurface,
+        spotLine: realResponse.spotLineGamma,
+      }
+    : null;
+
   return (
     <div className="container">
-      <h1>Option P&amp;L Surface (Greeks frozen)</h1>
+      <div className="tabs">
+        <button
+          className={`tab ${view === "trade" ? "active" : ""}`}
+          onClick={() => setView("trade")}
+        >
+          Trade Setup
+        </button>
+        <button
+          className={`tab ${view === "theoretical" ? "active" : ""}`}
+          onClick={() => setView("theoretical")}
+        >
+          3D Theoretical
+        </button>
+        <button
+          className={`tab ${view === "real" ? "active" : ""}`}
+          onClick={() => setView("real")}
+        >
+          3D Real
+        </button>
+      </div>
 
-      <div className="controls">
-        <div className="controls-row">
-          <div className="field">
-            <label>Symbol</label>
-            <input
-              value={symbol}
-              onChange={(e) => setSymbol(e.target.value.toUpperCase())}
-            />
-          </div>
-          <div className="field">
-            <label>Date</label>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label>Time (ET)</label>
-            <input
-              type="time"
-              value={time}
-              onChange={(e) => setTime(e.target.value)}
-            />
-          </div>
-          <div className="field">
-            <label>Spot @ snapshot</label>
-            <div className="spot-display">
-              {snapshotSpot != null ? snapshotSpot.toFixed(2) : "—"}
-            </div>
-          </div>
-          <div className="field">
-            <label>Time step (min)</label>
-            <select
-              value={timeStepMinutes}
-              onChange={(e) => setTimeStepMinutes(Number(e.target.value))}
-            >
-              {[15, 30, 60].map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label>Spot range (%)</label>
-            <input
-              type="number"
-              min={1}
-              max={30}
-              value={spotRangePercent}
-              onChange={(e) => setSpotRangePercent(Number(e.target.value))}
-            />
-          </div>
-          <div className="field">
-            <label>Spot samples</label>
-            <input
-              type="number"
-              min={10}
-              max={201}
-              value={spotSamples}
-              onChange={(e) => setSpotSamples(Number(e.target.value))}
-            />
-          </div>
+      {error && <div className="error">{error}</div>}
+
+      {view === "trade" && (
+        <>
+          <div className="hdr-row">
+        <div className="hdr-title">
+          <h1>{strategyName(legs)}</h1>
+          <span
+            className="hdr-info"
+            title="Multi-leg option P&L surface with frozen Greeks"
+          >
+            ?
+          </span>
         </div>
-
-        <div className="legs">
-          <div style={{ marginBottom: 8, fontWeight: 600 }}>Option legs</div>
-          {legs.map((leg, index) => (
-            <div className="leg-row" key={index}>
-              <select
-                value={leg.side}
-                onChange={(e) =>
-                  updateLeg(index, { side: e.target.value as "long" | "short" })
-                }
-              >
-                <option value="long">Long</option>
-                <option value="short">Short</option>
-              </select>
-              <select
-                value={leg.right}
-                onChange={(e) =>
-                  updateLeg(index, { right: e.target.value as "call" | "put" })
-                }
-              >
-                <option value="call">Call</option>
-                <option value="put">Put</option>
-              </select>
-              <select
-                value={leg.expiration}
-                onChange={(e) => changeLegExpiration(index, e.target.value)}
-              >
-                {availableExpirations.map((exp) => (
-                  <option key={exp} value={exp}>
-                    {exp}
-                  </option>
-                ))}
-              </select>
-              <select
-                value={leg.strike}
-                onChange={(e) => updateLeg(index, { strike: Number(e.target.value) })}
-              >
-                {(strikesByExpiration[leg.expiration] ?? []).map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
-              <input
-                type="number"
-                min={1}
-                value={leg.contracts}
-                onChange={(e) => updateLeg(index, { contracts: Number(e.target.value) })}
-                style={{ width: 90 }}
-              />
-              <button
-                className="secondary"
-                onClick={() => removeLeg(index)}
-              >
-                Remove
-              </button>
-            </div>
-          ))}
-          <button className="secondary" onClick={addLeg}>
-            + Add leg
-          </button>
-        </div>
-
-        <div className="controls-row" style={{ marginTop: 12 }}>
-          <button onClick={handleCompute} disabled={loading}>
+        <div className="hdr-actions">
+          <button className="pill">Positions ({legs.length})</button>
+          <button
+            className="pill primary"
+            onClick={handleCompute}
+            disabled={loading}
+          >
             {loading ? "Computing..." : "Plot surface"}
           </button>
         </div>
       </div>
 
-      {error && <div className="error">{error}</div>}
+      <div className="underlying-row">
+        <span className="ticker-chip">
+          <input
+            value={symbol}
+            onChange={(e) => setSymbol(e.target.value.toUpperCase())}
+          />
+        </span>
+        <span className="spot-price">
+          {snapshotSpot != null ? `$${snapshotSpot.toFixed(2)}` : "—"}
+        </span>
+        {spotChange != null && spotChangePct != null && (
+          <span
+            className={`spot-change ${spotChange >= 0 ? "pos" : "neg"}`}
+          >
+            {spotChangePct >= 0 ? "+" : ""}
+            {spotChangePct.toFixed(2)}%{"  "}
+            {spotChange >= 0 ? "+" : "-"}${Math.abs(spotChange).toFixed(2)}
+          </span>
+        )}
+        <span className="badge">Snapshot</span>
+      </div>
 
-      {response && (
-        <div className="meta">
-          Snapshot spot: {response.snapshotSpot.toFixed(2)} · Risk-free rate:{" "}
-          {(response.riskFreeRate * 100).toFixed(2)}% · Legs:{" "}
-          {response.legs
-            .map(
-              (l) =>
-                `${l.contracts > 0 ? "+" : ""}${l.contracts} ${l.right} ${l.strike} ${l.expiration} (IV ${(l.impliedVol * 100).toFixed(1)}%)`,
-            )
-            .join(", ")}
+      <div className="trade-date-row">
+        <div className="section-label">Trade Date</div>
+        <div className="field">
+          <label>Time (ET)</label>
+          <input
+            type="time"
+            value={time}
+            onChange={(e) => setTime(e.target.value)}
+          />
         </div>
+      </div>
+      <DateStrip selected={date} onSelect={setDate} />
+
+      <StrikeRuler
+        legs={legs}
+        spot={snapshotSpot}
+        symbol={symbol}
+        spotRangePercent={spotRangePercent}
+        strikesByExpiration={strikesByExpiration}
+        selectedIndex={null}
+        onSelect={() => {}}
+        onStrikeChange={(i, s) => updateLeg(i, { strike: s })}
+        onSideChange={(i, s) => updateLeg(i, { side: s })}
+        onRightChange={(i, r) => updateLeg(i, { right: r })}
+        onRemove={removeLeg}
+      />
+
+      <button className="pill add-leg" onClick={addLeg}>
+        Add Leg +
+      </button>
+
+      {legs.map((leg, index) => (
+        <LegConfigPanel
+          key={leg.id}
+          leg={leg}
+          symbol={symbol}
+          snapshotDate={date}
+          snapshotTime={time}
+          availableExpirations={availableExpirations}
+          strikes={strikesByExpiration[leg.expiration] ?? []}
+          onUpdate={(patch) => updateLeg(index, patch)}
+          onChangeExpiration={(exp) => changeLegExpiration(index, exp)}
+          onRemove={() => removeLeg(index)}
+        />
+      ))}
+
+      <StatsStrip stats={stats} />
+
+      <div className="sub-toolbar">
+        <div className="field">
+          <label>Time step (min)</label>
+          <select
+            value={timeStepMinutes}
+            onChange={(e) => setTimeStepMinutes(Number(e.target.value))}
+          >
+            {[15, 30, 60].map((v) => (
+              <option key={v} value={v}>
+                {v}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>Spot range (%)</label>
+          <input
+            type="number"
+            min={1}
+            max={30}
+            value={spotRangePercent}
+            onChange={(e) => setSpotRangePercent(Number(e.target.value))}
+          />
+        </div>
+        <div className="field">
+          <label>Spot samples</label>
+          <input
+            type="number"
+            min={10}
+            max={201}
+            value={spotSamples}
+            onChange={(e) => setSpotSamples(Number(e.target.value))}
+          />
+        </div>
+      </div>
+        </>
       )}
 
-      <div className="charts">
-        {valueData && (
-          <SurfacePanel
-            data={valueData}
-            title="3D Investment Value Surface"
-            zTitle="Position Value"
-          />
-        )}
-        {deltaData && (
-          <SurfacePanel
-            data={deltaData}
-            title="3D Investment Delta Surface"
-            zTitle="Delta"
-          />
-        )}
-        {gammaData && (
-          <SurfacePanel
-            data={gammaData}
-            title="3D Investment Gamma Surface"
-            zTitle="Gamma"
-          />
-        )}
-      </div>
+      {view === "theoretical" && (
+        <>
+          <div className="surface-header">
+            <button
+              className="pill primary"
+              onClick={handleCompute}
+              disabled={loading}
+            >
+              {loading ? "Computing..." : "Re-plot"}
+            </button>
+          </div>
+
+          {response ? (
+            <>
+              <div className="charts">
+                {valueData && (
+                  <SurfacePanel
+                    data={valueData}
+                    title="3D Investment Value Surface"
+                    zTitle="Position Value"
+                  />
+                )}
+                {deltaData && (
+                  <SurfacePanel
+                    data={deltaData}
+                    title="3D Investment Delta Surface"
+                    zTitle="Delta"
+                  />
+                )}
+                {gammaData && (
+                  <SurfacePanel
+                    data={gammaData}
+                    title="3D Investment Gamma Surface"
+                    zTitle="Gamma"
+                  />
+                )}
+              </div>
+              <div className="meta">
+                Snapshot spot: {response.snapshotSpot.toFixed(2)} · Risk-free
+                rate: {(response.riskFreeRate * 100).toFixed(2)}% · Legs:{" "}
+                {response.legs
+                  .map(
+                    (l) =>
+                      `${l.contracts > 0 ? "+" : ""}${l.contracts} ${l.right} ${l.strike} ${l.expiration} (IV ${(l.impliedVol * 100).toFixed(1)}%)`,
+                  )
+                  .join(", ")}
+              </div>
+            </>
+          ) : (
+            <div className="empty-surface">
+              No theoretical surface plotted yet. Go to Trade Setup and click
+              &quot;Plot surface&quot;.
+            </div>
+          )}
+        </>
+      )}
+
+      {view === "real" && (
+        <>
+          <div className="surface-header">
+            <button
+              className="pill primary"
+              onClick={handleComputeReal}
+              disabled={realLoading}
+            >
+              {realLoading
+                ? "Computing..."
+                : realResponse
+                  ? "Re-plot Real"
+                  : "Plot Real Surface"}
+            </button>
+          </div>
+
+          {realResponse ? (
+            <div className="charts">
+              {realValueData && (
+                <SurfacePanel
+                  data={realValueData}
+                  title="3D Real Value Surface"
+                  zTitle="Position Value"
+                />
+              )}
+              {realDeltaData && (
+                <SurfacePanel
+                  data={realDeltaData}
+                  title="3D Real Delta Surface"
+                  zTitle="Delta"
+                />
+              )}
+              {realGammaData && (
+                <SurfacePanel
+                  data={realGammaData}
+                  title="3D Real Gamma Surface"
+                  zTitle="Gamma"
+                />
+              )}
+            </div>
+          ) : (
+            <div className="empty-surface">
+              Click &quot;Plot Real Surface&quot; to build the 3D chart from the
+              actual observed IV over time.
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

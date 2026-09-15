@@ -58,13 +58,18 @@ Angular reference in `Temp/OptionPricing3DSurface`.
 1. Start the Theta Terminal (see `THETADATA-V3.md`):
    `cd ThetaData && THETADATA_API_KEY="$(cat api.key)" java -jar ThetaTerminalv3.jar`
 2. Start the server (port 5210):
-   `cd Server && dotnet run`
+   `Deploy/start-server.sh`
 3. Start the client (port 3000):
-   `cd Client && npm install && npm run dev`
+   `Deploy/start-web.sh`   (add `--build` to rebuild the Next.js bundle first)
 
-Open `http://localhost:3000`. Pick a date/time, add option legs (each leg has its own side, call/put,
-expiration, strike, and quantity), click "Plot surface". Three 3D surfaces render (Value / Delta /
-Gamma) with the realized spot path traced in orange.
+Stop with `Deploy/stop-server.sh` and `Deploy/stop-web.sh` (idempotent; logs in `Deploy/logs/`,
+PID files in `Deploy/*.pid`).
+
+Open `http://localhost:3000`. The header shows the underlying, an expiration strip (month tabs +
+date chips), and a **strike ruler** — add legs, then drag each pill on the ruler to move its strike
+(above axis = long, below = short; green = call, red = put). The stats row shows net debit, max
+loss/profit and breakevens. Click "Plot surface" to render the 3D Value / Delta / Gamma surfaces
+with the realized spot path traced in orange.
 
 > When working on a remote machine over VS Code port-forwarding, only `:3000` needs forwarding:
 > the Next.js server proxies `/api/*` to the C# server on `:5210` (see `next.config.mjs`).

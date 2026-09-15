@@ -55,6 +55,15 @@ Consequently the snapshot must be a past trading moment that has market data. "T
 open has no data (see `THETADATA-V3.md`), so the client defaults the date to the last completed
 trading day.
 
+## Deploy (`Deploy/`)
+
+Shell scripts to run/stop the two services (idempotent; PID files in `Deploy/*.pid`, logs in
+`Deploy/logs/`):
+- `start-server.sh` / `stop-server.sh` — build + run / stop the C# server (port 5210).
+- `start-web.sh` / `stop-web.sh` — run / stop the Next.js app (port 3000; pass `--build` to rebuild).
+
+See `index.md` "How to run". (The Theta Terminal is launched separately — see `THETADATA-V3.md`.)
+
 ## Server project layout (`Server/`)
 
 ```
@@ -98,7 +107,19 @@ Server/
 - `GET /api/market/strikes?symbol=SPY&expiration=YYYY-MM-DD` → strikes.
 - `GET /api/market/spot?symbol=SPY&date=YYYY-MM-DD&time=HH:mm` → spot (mid) at the snapshot moment
   (0 when no data, e.g. pre-market today). Used by the client's live "Spot @ snapshot" readout.
-- `POST /api/surface` → compute value/delta/gamma surfaces + the three spot lines.
+- `GET /api/market/quote-summary?symbol&date&time` → `{ spot, previousClose }` for the underlying row
+  (day-over-day change).
+- `POST /api/surface` → compute the **theoretical** value/delta/gamma surfaces + the three spot lines.
+- `POST /api/surface/real` → compute the **real** surfaces: for each leg it fetches the historical
+  first-order greeks series over `[tradeDate, last data day]` at the "Time step (min)" interval, then
+  for each actual timestamp re-prices the leg over the spot axis using the **observed IV at that
+  timestamp** (not the frozen snapshot IV). Returns the same `SurfaceResponse` shape. This reveals the
+  real, non-smooth surface driven by how IV actually moved through time.
+- `POST /api/surface/stats` → compute strategy stats: `netDebit`, `maxProfit`, `maxLoss`, `breakevens`,
+  and per-leg `entryPrice`, `impliedVol`, `bid`, `ask`, `delta`, `theta`, `vega`, `gamma` (gamma is
+  computed server-side via Black-Scholes; the rest come from ThetaData first-order greeks).
+- `POST /api/surface/leg-greeks` → greeks for a **single** leg (`{symbol, snapshotDate, snapshotTime,
+  leg}`) — used by `LegConfigPanel` for one-to-one per-leg greeks refresh.
 
 See `Dtos.cs` for the exact request/response shapes.
 
@@ -112,25 +133,106 @@ See [DATABASE.md](DATABASE.md).
 Client/
   app/
     layout.tsx          # root layout + metadata
-    page.tsx            # main page: controls (date/time/expiration/legs) + 3 charts
-    globals.css         # styles
+    page.tsx            # main page: OptionStrat-style header + ruler + stats + 3 charts
+    globals.css         # dark-navy theme + component styles
   components/
+    DateStrip.tsx       # horizontal drag-scrollable snapshot-date strip (month header + clickable dates)
+    ExpirationStrip.tsx # "EXPIRATION: Nd" + month tabs + per-expiration date chips
+    StrikeRuler.tsx     # strike ruler with draggable leg pills (see conventions below)
+    StatsStrip.tsx      # 5-cell stats row (net debit/credit, max loss, max profit, pop, breakevens)
     SurfacePanel.tsx    # Plotly 3D surface component (value/delta/gamma), synced cameras
   lib/
     api.ts              # fetch wrappers -> WebAPI
-    types.ts            # request/response types mirroring server DTOs
+    types.ts            # shared types (Leg, request/response DTOs)
   types/plotly.d.ts     # module declaration for plotly.js-dist-min
 ```
 
-Notes on the UI (`page.tsx`):
-- Each option leg is independent and carries **Long/Short**, **Call/Put**, its own **expiration**, a
-  **strike**, and a positive **quantity**. The signed contract count (`+qty` long, `-qty` short) is
-  computed client-side before `POST /api/surface`. This supports multi-expiry combinations
-  (e.g. calendar spreads).
-- Strikes are fetched **per expiration** and cached in `strikesByExpiration` (keyed by `YYYY-MM-DD`);
-  a leg's strike list refreshes when its expiration changes.
-- A live **"Spot @ snapshot"** readout fetches `GET /api/market/spot` (debounced 400 ms) whenever the
-  date/time/symbol changes, so the user sees the underlying price at the chosen moment during setup.
+## UI model (OptionStrat-style header, top → bottom)
+
+The page is a **three-tab view**: **Trade Setup** (all controls below), **3D Theoretical** (the frozen-IV
+surface), and **3D Real** (the observed-IV surface).
+
+- **3D Theoretical**: "Plot surface" computes the surface using each leg's **IV frozen at the snapshot**
+  and switches to this tab (Re-plot available). Smooth, because IV is assumed constant over time.
+- **3D Real**: "Plot Real Surface" fetches the **actual** first-order greeks (IV) series for each leg at
+  the "Time step (min)" interval and re-prices each time-slice with the IV **actually observed** at that
+  time. This shows the real, non-smooth surface of how the option's value actually evolved (spot +
+  IV), rather than the theoretical one. Per-leg greeks fetches are **parallelised** (`Task.WhenAll`);
+  a single-leg or 4-leg request completes in ~1 s.
+
+Trade Setup, top → bottom:
+
+1. **Title row** — auto-named strategy (e.g. "Long Call", "Iron Condor") + "?" icon; action pills:
+   `Positions (N)`, `Plot surface` (primary blue pill).
+2. **Underlying row** — dark ticker chip (editable symbol), large last price, red/green day-over-day
+   change (from `quote-summary`), "Snapshot" badge.
+3. **Trade Date (DateStrip)** — the drag-scrollable as-of / snapshot-date selector, with a
+   **"Trade Date"** label and a **Time (ET)** input alongside it (date + time = the strategy's entry
+   moment). This is our "as-of time" concept, which OptionStrat lacks.
+4. **StrikeRuler (option legs panel)** — horizontal strike axis with tick marks + labels and a dashed
+   spot marker (**symbol + spot price**, e.g. `SPY 764.10`). One pill per leg positioned by strike:
+   - **Above the axis = LONG, below the axis = SHORT.**
+   - **Colour by right: green = call (`#51B349`), red = put (`#B2242F`).**
+   - Pill text is `{strike}{C|P}` (e.g. `750C`).
+   - **Drag a pill left/right to change its strike** (snaps to the available strikes for that leg's
+     expiration); **drag up/down across the axis to flip its side** (long ↔ short); **double-click a pill
+     to swap call ↔ put**. Grabbing/dragging a pill does **not** scroll the page (scrolling to the
+     config panel was removed — it disrupted the drag gesture).
+   - Each pill has an **×** (right side) to remove that leg directly from the ruler.
+   - Each pill has a **small arrow** pointing to its strike on the axis: long pills (above) point down,
+     short pills (below) point up.
+   - **The axis is a fixed, spot-centred window** `[spot − W, spot + W]` with `W = spot ×
+     SpotRangePercent/100`. The scale never changes when dragging a leg — only the pill moves — and the
+     underlying price always sits at the centre of the ruler. The window shares the same X range as the
+     surface (so widen "Spot range %" to reach strikes further from spot). Pills outside the window are
+     clamped to the edge.
+   - Pills are placed in **non-overlapping lanes** (greedy horizontal collision-avoidance). The
+     separation is **width-aware** — `60px ÷ track width` (measured with a `ResizeObserver`), using
+     half-width edges so the minimum gap is exactly one pill width; pills only stack into a new lane
+     when they actually touch.
+   - Pill text shows the quantity when > 1, e.g. `2× 762C` (single contracts render just `762C`).
+5. **Add Leg +** button — sits under the StrikeRuler, before the config panels (renamed from "Add+";
+   moved out of the title row). No legs exist until it's clicked.
+6. **Per-leg config panels** — one panel per leg (rendered by `LegConfigPanel`, keyed by a stable leg
+   `id`), directly under the "Add Leg" button. Each panel is **collapsible** (click its header to
+   toggle): expanded shows its own **expiration ruler** (`ExpirationStrip`) + Side / Call-Put / Strike /
+   Qty controls + a **greeks row** (Bid, Ask, Delta, Gamma, Theta, Vega, IV); collapsed shows a single
+   compact summary row (`Long 762C · 2 · Exp 2026-09-18 · Δ … · IV … · bid/ask`). Each panel fetches its
+   **own** greeks via `POST /api/surface/leg-greeks` (200 ms debounce, `…`/`Recalculating…` while
+   fetching) — so dragging one leg refreshes only that leg, **one-to-one, without touching the others**.
+   Other details:
+   - Header badge like `Long 420C · 1` (side + `{strike}{C|P}` + `· {qty}`) so the contract count is
+     never confused with the strike.
+   - A **new** leg defaults to the available strike **nearest the snapshot spot** (ATM), not the lowest.
+7. **StatsStrip** — NET DEBIT/CREDIT, MAX LOSS, MAX PROFIT, CHANCE OF PROFIT (`—`, POP not computed),
+   BREAKEVENS. Live-computed via `POST /api/surface/stats` (250 ms debounce) from the current legs.
+8. **Analysis params (demoted)** — a slim toolbar for Time step, Spot range (%), Spot samples (Time (ET)
+   lives in the Trade Date row).
+9. **Charts** — the 3D P&L/delta/gamma surfaces, on a **dark background** matching the theme
+   (`paper_bgcolor` `#04041F`, light axis ticks/grid). Shown in the **3D Theoretical** / **3D Real**
+   tabs (Re-plot buttons; no separate "Back" button — the tabs handle navigation). The surface **Y axis
+   is categorical** (numeric indices with timestamp tick labels), so non-trading hours (nights/weekends)
+   are skipped and the surface/orange line don't stretch across market-closed gaps. Time-to-expiry is
+   **calendar time** (the standard `(expiry − now).TotalDays / 365`), matching how ThetaData calibrates its
+   implied vol, so option prices/stats are correct (a long-far/short-near calendar spread is a debit with
+   negative P&L far from the strike). For the **3D Real** surface the observed IV series is filtered to
+   valid quotes (bid>0 & ask>0) and **bridged overnight** (the first valid quote of each day carries the
+   previous day's close IV), which removes the garbage/empty open-quote IV that caused a spurious chasm.
+   The hover tooltip shows the real timestamp (surface uses a 2D `customdata` array + `hovertemplate`
+   `%{customdata}`; the orange line uses 1D `customdata`). The Y-axis tick labels are dense (~50,
+   `MM-DD HH:mm`, 8px) so they align with the orange line's per-time-step spot path.
+
+Scroll behaviour: horizontal scroll containers (`DateStrip`, expiration chips/month tabs, strike ruler,
+stats strip) hide their scrollbars (`scrollbar-width: none` + `::-webkit-scrollbar { display: none }`)
+while keeping drag/wheel scrolling, so no scrollbar pops in and disrupts the layout.
+
+Theme: dark navy (`#04041F` bg, `#11112A`/`#1A1A33` panels, `#E8EAF2` text, `#4B9DD9` accent,
+green `#51B349`, red `#B2242F`) — palette extracted from the provided OptionStrat screenshot via PIL.
+
+Data notes:
+- Each option leg is independent (side, call/put, its own expiration, strike, positive qty); signed
+  contracts are computed client-side. Supports multi-expiry combinations.
+- Strikes are fetched per expiration and cached in `strikesByExpiration` (keyed by `YYYY-MM-DD`).
 
 Client is Next.js **14.2.35** (App Router) + `plotly.js-dist-min` (dynamically imported, client-side).
 It calls the WebAPI **same-origin**: `next.config.mjs` rewrites `/api/*` → `http://localhost:5210/api/*`

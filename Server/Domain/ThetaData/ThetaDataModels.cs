@@ -86,6 +86,24 @@ namespace TestOptionStrategy.Server.Domain.ThetaData
         public List<double> Ask { get; set; } = new List<double>();
     }
 
+    public class StockEodResponse
+    {
+        [JsonPropertyName("created")]
+        public List<string> Created { get; set; } = new List<string>();
+
+        [JsonPropertyName("close")]
+        public List<double> Close { get; set; } = new List<double>();
+
+        [JsonPropertyName("open")]
+        public List<double> Open { get; set; } = new List<double>();
+
+        [JsonPropertyName("high")]
+        public List<double> High { get; set; } = new List<double>();
+
+        [JsonPropertyName("low")]
+        public List<double> Low { get; set; } = new List<double>();
+    }
+
     public class InterestRateResponse
     {
         [JsonPropertyName("rate")]
@@ -93,6 +111,15 @@ namespace TestOptionStrategy.Server.Domain.ThetaData
 
         [JsonPropertyName("created")]
         public List<string> Created { get; set; } = new List<string>();
+    }
+
+    public class CalendarResponse
+    {
+        [JsonPropertyName("date")]
+        public List<string> Date { get; set; } = new List<string>();
+
+        [JsonPropertyName("type")]
+        public List<string> Type { get; set; } = new List<string>();
     }
 
     public class OptionGreeksRow

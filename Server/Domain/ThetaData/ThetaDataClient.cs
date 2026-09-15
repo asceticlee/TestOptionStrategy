@@ -126,8 +126,32 @@ namespace TestOptionStrategy.Server.Domain.ThetaData
             return result;
         }
 
-        public async Task<List<(DateOnly Day, double Rate)>> GetInterestRateEodAsync(
+        public async Task<List<(DateOnly Day, double Close)>> GetStockEodAsync(
             string symbol,
+            DateOnly startDate,
+            DateOnly endDate)
+        {
+            string url = $"{_baseUrl}/stock/history/eod?symbol={symbol}&start_date={FormatDate(startDate)}&end_date={FormatDate(endDate)}&format=json";
+            StockEodResponse? response = await GetJsonAsync<StockEodResponse>(url);
+            if (response == null)
+            {
+                return new List<(DateOnly, double)>();
+            }
+            List<(DateOnly Day, double Close)> result = new List<(DateOnly Day, double Close)>();
+            int count = response.Created.Count;
+            for (int i = 0; i < count; i++)
+            {
+                if (DateOnly.TryParse(response.Created[i], out DateOnly day))
+                {
+                    double close = i < response.Close.Count ? response.Close[i] : 0;
+                    result.Add((day, close));
+                }
+            }
+            result.Sort((a, b) => a.Day.CompareTo(b.Day));
+            return result;
+        }
+
+        public async Task<List<(DateOnly Day, double Rate)>> GetInterestRateEodAsync(            string symbol,
             DateOnly startDate,
             DateOnly endDate)
         {
@@ -145,6 +169,27 @@ namespace TestOptionStrategy.Server.Domain.ThetaData
                 {
                     double rate = i < response.Rate.Count ? response.Rate[i] : 0;
                     result.Add((day, rate));
+                }
+            }
+            return result;
+        }
+
+        public async Task<List<(DateOnly Date, string Type)>> GetYearHolidaysAsync(int year)
+        {
+            string url = $"{_baseUrl}/calendar/year_holidays?year={year}&format=json";
+            CalendarResponse? response = await GetJsonAsync<CalendarResponse>(url);
+            if (response == null)
+            {
+                return new List<(DateOnly, string)>();
+            }
+            List<(DateOnly, string)> result = new List<(DateOnly, string)>();
+            int count = response.Date.Count;
+            for (int i = 0; i < count; i++)
+            {
+                if (DateOnly.TryParse(response.Date[i], out DateOnly day))
+                {
+                    string type = i < response.Type.Count ? response.Type[i] : string.Empty;
+                    result.Add((day, type));
                 }
             }
             return result;

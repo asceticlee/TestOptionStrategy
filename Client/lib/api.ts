@@ -1,4 +1,10 @@
-import type { SurfaceRequest, SurfaceResponse } from "./types";
+import type {
+  QuoteSummary,
+  StatsLeg,
+  StatsResponse,
+  SurfaceRequest,
+  SurfaceResponse,
+} from "./types";
 
 // Same-origin: Next.js rewrites /api/* to the C# server (see next.config.mjs).
 // This keeps the browser on :3000 so only that port needs forwarding.
@@ -53,5 +59,65 @@ export async function computeSurface(
     const text = await res.text();
     throw new Error(text || `Request failed with status ${res.status}`);
   }
+  return res.json();
+}
+
+export async function computeStats(
+  request: SurfaceRequest,
+): Promise<StatsResponse> {
+  const res = await fetch(`${API_BASE}/api/surface/stats`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Request failed with status ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function computeLegGreeks(request: {
+  symbol: string;
+  snapshotDate: string;
+  snapshotTime: string;
+  leg: { right: "call" | "put"; strike: number; expiration: string; contracts: number };
+}): Promise<StatsLeg> {
+  const res = await fetch(`${API_BASE}/api/surface/leg-greeks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Request failed with status ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function computeRealSurface(
+  request: SurfaceRequest,
+): Promise<SurfaceResponse> {
+  const res = await fetch(`${API_BASE}/api/surface/real`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `Request failed with status ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function fetchQuoteSummary(
+  symbol: string,
+  date: string,
+  time: string,
+): Promise<QuoteSummary> {
+  const res = await fetch(
+    `${API_BASE}/api/market/quote-summary?symbol=${encodeURIComponent(symbol)}&date=${encodeURIComponent(date)}&time=${encodeURIComponent(time)}`,
+  );
+  if (!res.ok) throw new Error("Failed to fetch quote summary");
   return res.json();
 }
