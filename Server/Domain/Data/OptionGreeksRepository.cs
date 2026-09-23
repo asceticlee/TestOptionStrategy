@@ -48,11 +48,19 @@ namespace TestOptionStrategy.Server.Domain.Data
                     }
                     sql.AppendLine();
                 }
-                sql.AppendLine("on conflict (symbol, expiration, strike, opt_right, ts) do nothing;");
+                sql.AppendLine("on conflict (symbol, expiration, strike, opt_right, ts) do update set implied_vol = excluded.implied_vol;");
                 affected += await connection.ExecuteAsync(sql.ToString(), transaction: transaction);
             }
             transaction.Commit();
             return affected;
+        }
+
+        public async Task<DateTime?> GetMaxTsUtcAsync(string symbol)
+        {
+            using NpgsqlConnection connection = _database.OpenConnection();
+            const string sql = "select max(ts) from option_greeks where symbol = @Symbol;";
+            DateTime? max = await connection.QuerySingleOrDefaultAsync<DateTime?>(sql, new { Symbol = symbol });
+            return max;
         }
 
         public async Task<List<OptionGreeksEntity>> ListAsync(

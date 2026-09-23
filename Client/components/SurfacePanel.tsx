@@ -66,10 +66,10 @@ export default function SurfacePanel({ data, title, zTitle }: SurfacePanelProps)
         x: data.x,
         y: yLabels.map((_, i) => i),
         z: data.z,
-        customdata: data.z.map((row, i) => row.map(() => yLabels[i])),
+        text: data.x.map(() => yLabels),
         type: "surface",
         hovertemplate:
-          "Spot: %{x:.2f}<br>Time: %{customdata}<br>Value: %{z:.2f}<extra></extra>",
+          "Spot: %{x:.2f}<br>Time: %{text}<br>Value: %{z:.2f}<extra></extra>",
         contours: {
           x: { show: true, color: "black" },
           y: { show: true, color: "black" },
@@ -81,11 +81,11 @@ export default function SurfacePanel({ data, title, zTitle }: SurfacePanelProps)
         x: data.spotLine.map((p) => p.x),
         y: data.spotLine.map((p) => yIndex.get(p.y) ?? 0),
         z: data.spotLine.map((p) => p.z),
-        customdata: data.spotLine.map((p) => p.y),
+        text: data.spotLine.map((p) => p.y),
         type: "scatter3d",
         mode: "lines",
         hovertemplate:
-          "Spot: %{x:.2f}<br>Time: %{customdata}<br>Value: %{z:.2f}<extra></extra>",
+          "Spot: %{x:.2f}<br>Time: %{text}<br>Value: %{z:.2f}<extra></extra>",
         line: { width: 5, color: "orange" },
       };
 
@@ -114,6 +114,7 @@ export default function SurfacePanel({ data, title, zTitle }: SurfacePanelProps)
         paper_bgcolor: "#04041f",
         font: { color: "#cfd4e6" },
         scene: {
+          aspectmode: "cube",
           camera: { eye: { x: 0.5, y: -1, z: 1.5 } },
           xaxis: {
             title: "Spot Price",

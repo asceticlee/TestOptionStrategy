@@ -46,6 +46,14 @@ namespace TestOptionStrategy.Server.Domain.Data
             return affected;
         }
 
+        public async Task<DateTime?> GetMaxTsUtcAsync(string symbol)
+        {
+            using NpgsqlConnection connection = _database.OpenConnection();
+            const string sql = "select max(ts) from spot_quote where symbol = @Symbol;";
+            DateTime? max = await connection.QuerySingleOrDefaultAsync<DateTime?>(sql, new { Symbol = symbol });
+            return max;
+        }
+
         public async Task<List<SpotQuoteEntity>> ListAsync(string symbol, DateTime fromUtc, DateTime toUtc)
         {
             using NpgsqlConnection connection = _database.OpenConnection();

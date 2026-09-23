@@ -82,6 +82,19 @@ GET /v3/option/history/greeks/first_order?symbol=SPY&expiration=20260918&strike=
 Returns columns: `symbol, expiration, strike, right, timestamp, bid, ask, delta, theta, vega, rho,
 epsilon, lambda, implied_vol, iv_error, underlying_timestamp, underlying_price`.
 
+**Whole-chain fetch (verified):** omit `strike` and `right` to get **all strikes and both rights for a
+single expiration** in one response (e.g. ~198 strikes for SPY). `expiration` must be a specific date
+(no `*` on this endpoint). Multi-day requests are limited to **1 month** — the data loader (see
+`DATA-LOADING.md`) chunks by week and month to respect this and the ~500k-row pagination ceiling.
+
+**1-month bulk limit applies to the surface too.** `first_order` (and `stock/history/quote`) reject a
+single request whose `start_date..end_date` spans more than ~1 month (`Bulk history requests are limited
+to no more than 1 month`). The live surface's smile-window fetch (`MarketDataService.
+GetOptionGreeksSmileWindowAsync`) and spot-quote fetch (`GetSpotQuotesAsync`) both **chunk** (14 / 20 days
+respectively) so a strategy whose expiry is > ~1 month from the snapshot still works — e.g. a 27-Jul
+snapshot with a 04-Sep expiry (40 days) previously failed the 3D Real surface with "No historical option
+data is available for the real surface over this range."
+
 ### Example interest rate (verified)
 
 ```
@@ -109,3 +122,22 @@ Concretely: before market open (09:30 ET) there is no data for today at all, so 
 "today" returns nothing and the surface call errors with "No market data for ... at <date> <time> ET".
 The client therefore defaults its snapshot date to the **last completed trading day** (yesterday,
 skipping weekends), and the server returns a clear message telling the user to pick an earlier day.
+
+## Expiration listing vs data availability (backtests)
+
+`GET /option/list/expirations` returns **every** expiration ThetaData knows about (past and future,
+2012→2029 for SPY), but data for a given expiration only exists from its **listing date** to its
+expiry. SPY's listing schedule is:
+
+- **Monthlies (3rd Friday)** — listed months (up to ~a year+) in advance, so a past trade date has data
+  for them (e.g. 16-Oct-2026 was trading on 27-Jul-2026).
+- **Weeklies (every Friday)** — listed ~6 weeks (≈42 days) before expiry (verified: the 09-Oct-2026
+  weekly first traded **28-Aug-2026**, exactly 6 weeks before 09-Oct). So it is NOT available 10 weeks
+  out, but IS available ~3 weeks out (e.g. visible on 14-Sep-2026).
+- **Dailies / 0DTE** — listed ~1 day before.
+
+So a weekly like **09-Oct-2026** (a Friday) did NOT exist on a **27-Jul-2026** trade date (~10 weeks
+out) — ThetaData returns `No data found`, and the surface reports "No market data". The expiration strip
+still lists it (the list is static), which is why it looks selectable but then errors. To backtest a long
+expiry on a past date, pick a **monthly** (3rd-Friday) expiry rather than a weekly. The server's
+"No market data" message now mentions the not-yet-listed possibility.

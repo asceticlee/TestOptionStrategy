@@ -126,6 +126,24 @@ namespace TestOptionStrategy.Server.Common
             return double.NaN;
         }
 
+        public double CalculateMidImpliedVolatility(
+            OptionType optionType,
+            double spot,
+            double strike,
+            double daysToExpiry,
+            double riskFreeRate,
+            double bid,
+            double ask)
+        {
+            if (bid <= 0 || ask <= 0 || spot <= 0 || strike <= 0 || daysToExpiry <= 0)
+            {
+                return 0;
+            }
+            double mid = (bid + ask) / 2.0;
+            double iv = CalculateImpliedVolatility(mid, spot, strike, daysToExpiry, riskFreeRate, optionType);
+            return double.IsNaN(iv) || double.IsInfinity(iv) || iv <= 0 ? 0 : iv;
+        }
+
         public double NormalCdf(double x)
         {
             return 0.5 * (1.0 + Erf(x / Math.Sqrt(2.0)));

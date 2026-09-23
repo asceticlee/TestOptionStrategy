@@ -35,6 +35,12 @@ namespace TestOptionStrategy.Server.Common
             return new DateOnly(year, month, day);
         }
 
+        public static DateTime ExpiryUtc(DateOnly expiration)
+        {
+            DateTime eastern = new DateTime(expiration.Year, expiration.Month, expiration.Day, 16, 0, 0);
+            return TimeZoneInfo.ConvertTimeToUtc(DateTime.SpecifyKind(eastern, DateTimeKind.Unspecified), UsTimeZone);
+        }
+
         public static DateTime ParseThetaTimestampAsUtc(string timestamp)
         {
             DateTime eastern = DateTime.Parse(timestamp);

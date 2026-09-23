@@ -72,6 +72,34 @@ namespace TestOptionStrategy.Server.Domain.ThetaData
             string strikeText = strike.ToString("0.0#####", CultureInfo.InvariantCulture);
             string url = $"{_baseUrl}/option/history/greeks/first_order?symbol={symbol}&expiration={FormatDate(expiration)}&strike={strikeText}&right={right}&start_date={FormatDate(startDate)}&end_date={FormatDate(endDate)}&interval={interval}&format=json";
             OptionGreeksFirstOrderResponse? response = await GetJsonAsync<OptionGreeksFirstOrderResponse>(url);
+            return ParseFirstOrder(response, symbol, expiration, strike, right.ToUpperInvariant());
+        }
+
+        public async Task<List<OptionGreeksRow>> GetOptionGreeksFirstOrderChainAsync(
+            string symbol,
+            DateOnly expiration,
+            DateOnly startDate,
+            DateOnly endDate,
+            string interval,
+            int? strikeRange)
+        {
+            string url = $"{_baseUrl}/option/history/greeks/first_order?symbol={symbol}&expiration={FormatDate(expiration)}&start_date={FormatDate(startDate)}&end_date={FormatDate(endDate)}&interval={interval}";
+            if (strikeRange.HasValue && strikeRange.Value > 0)
+            {
+                url += $"&strike_range={strikeRange.Value}";
+            }
+            url += "&format=json";
+            OptionGreeksFirstOrderResponse? response = await GetJsonAsync<OptionGreeksFirstOrderResponse>(url);
+            return ParseFirstOrder(response, symbol, expiration, 0, string.Empty);
+        }
+
+        private List<OptionGreeksRow> ParseFirstOrder(
+            OptionGreeksFirstOrderResponse? response,
+            string symbol,
+            DateOnly expiration,
+            double fallbackStrike,
+            string fallbackRight)
+        {
             if (response == null)
             {
                 return new List<OptionGreeksRow>();
@@ -84,8 +112,8 @@ namespace TestOptionStrategy.Server.Domain.ThetaData
                 {
                     Symbol = i < response.Symbol.Count ? response.Symbol[i] : symbol,
                     Expiration = expiration,
-                    Strike = i < response.Strike.Count ? response.Strike[i] : strike,
-                    Right = i < response.Right.Count ? response.Right[i] : right.ToUpperInvariant(),
+                    Strike = i < response.Strike.Count ? response.Strike[i] : fallbackStrike,
+                    Right = i < response.Right.Count ? response.Right[i] : fallbackRight,
                     TimestampUtc = MarketClock.ParseThetaTimestampAsUtc(response.Timestamp[i]),
                     Bid = i < response.Bid.Count ? response.Bid[i] : 0,
                     Ask = i < response.Ask.Count ? response.Ask[i] : 0,

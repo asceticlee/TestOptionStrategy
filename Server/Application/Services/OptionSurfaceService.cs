@@ -67,29 +67,46 @@ namespace TestOptionStrategy.Server.Application.Services
                 })
                 .ToList();
 
-            OptionGreeksRow?[] greeksRows = await Task.WhenAll(
-                legMeta.Select(meta => _marketData.GetOptionGreeksAtSnapshotAsync(
-                    request.Symbol, meta.Expiration, meta.Request.Strike, meta.Right, snapshotUtc))
-            );
+            Dictionary<DateOnly, Dictionary<DateTime, List<OptionGreeksRow>>> chainIndex =
+                new Dictionary<DateOnly, Dictionary<DateTime, List<OptionGreeksRow>>>();
+            foreach (DateOnly expiration in legMeta.Select(m => m.Expiration).Distinct())
+            {
+                List<double> legStrikes = legMeta.Where(m => m.Expiration == expiration).Select(m => m.Request.Strike).ToList();
+                List<double> allStrikes = await _marketData.GetStrikesAsync(request.Symbol, expiration);
+                List<double> smileStrikes = SelectSmileStrikes(allStrikes, legStrikes);
+                List<OptionGreeksRow> chain = await _marketData.GetOptionGreeksSmileWindowAsync(
+                    request.Symbol, expiration, snapshotDay, snapshotDay, "1m", smileStrikes);
+                chainIndex[expiration] = BuildChainIndex(chain, snapshotUtc, snapshotUtc.AddDays(1));
+            }
 
+            TimeSpan tolerance = TimeSpan.FromMinutes(5);
             List<ResolvedLeg> legs = new List<ResolvedLeg>();
             double snapshotSpot = 0;
             for (int i = 0; i < legMeta.Count; i++)
             {
                 (OptionLegRequest legRequest, string right, OptionType optionType, DateOnly expiration, DateTime expiryUtc) = legMeta[i];
-                OptionGreeksRow? greeksRow = greeksRows[i];
+                List<OptionGreeksRow> group = GroupAtTime(chainIndex[expiration], snapshotUtc, tolerance);
 
-                if (greeksRow == null)
+                if (group.Count == 0)
                 {
                     throw new InvalidOperationException(
                         $"No market data for {right} {legRequest.Strike} exp {expiration:yyyy-MM-dd} at {request.SnapshotDate} {request.SnapshotTime} ET. " +
-                        "The snapshot may be today before market open, a weekend/holiday, or an illiquid contract. Pick an earlier completed trading day.");
+                        "This expiration may not have been listed yet at that date (SPY weekly/daily expirations are listed only shortly before expiry), " +
+                        "or the snapshot is a weekend/holiday/pre-market, or the contract is illiquid. Try a monthly (3rd-Friday) expiration or an earlier trade date.");
                 }
 
+                double spot = group.Where(r => r.UnderlyingPrice > 0).Select(r => r.UnderlyingPrice).FirstOrDefault();
+                if (spot <= 0)
+                {
+                    spot = await _marketData.GetSpotAtSnapshotAsync(request.Symbol, snapshotUtc);
+                }
                 if (snapshotSpot == 0)
                 {
-                    snapshotSpot = greeksRow.UnderlyingPrice;
+                    snapshotSpot = spot;
                 }
+
+                OptionGreeksRow? own = group.FirstOrDefault(r => StrikesMatch(r.Strike, legRequest.Strike) && MarketDataService.NormalizeRight(r.Right) == right);
+                double ivMark = DeduceLegMarkIv(group, spot, riskFreeRateDecimal, legRequest.Strike, optionType, expiryUtc, snapshotUtc, own);
 
                 ResolvedLeg leg = new ResolvedLeg
                 {
@@ -97,20 +114,20 @@ namespace TestOptionStrategy.Server.Application.Services
                     Strike = legRequest.Strike,
                     Expiration = expiration,
                     Contracts = legRequest.Contracts,
-                    ImpliedVol = greeksRow.ImpliedVol,
+                    ImpliedVol = ivMark,
                     ExpiryUtc = expiryUtc,
-                    Bid = greeksRow.Bid,
-                    Ask = greeksRow.Ask,
-                    Delta = greeksRow.Delta,
-                    Theta = greeksRow.Theta,
-                    Vega = greeksRow.Vega,
-                    UnderlyingPrice = greeksRow.UnderlyingPrice
+                    Bid = own != null ? own.Bid : 0,
+                    Ask = own != null ? own.Ask : 0,
+                    Delta = own != null ? own.Delta : 0,
+                    Theta = own != null ? own.Theta : 0,
+                    Vega = own != null ? own.Vega : 0,
+                    UnderlyingPrice = spot
                 };
                 double daysToExpiry = (expiryUtc - snapshotUtc).TotalDays;
                 OptionPriceAndGreeks bsGreeks = _greeks.GetPriceAndGreeks(
-                    optionType, snapshotSpot, legRequest.Strike, daysToExpiry, riskFreeRateDecimal, greeksRow.ImpliedVol);
+                    optionType, spot, legRequest.Strike, daysToExpiry, riskFreeRateDecimal, ivMark);
                 leg.Gamma = bsGreeks.Gamma;
-                leg.EntryPrice = PriceAt(leg, snapshotSpot, snapshotUtc, riskFreeRateDecimal);
+                leg.EntryPrice = bsGreeks.Price;
                 legs.Add(leg);
             }
 
@@ -260,36 +277,24 @@ namespace TestOptionStrategy.Server.Application.Services
 
             string interval = MapTimeStepToInterval(request.TimeStepMinutes);
 
-            Task<List<OptionGreeksRow>>[] fetchTasks = legs
-                .Select(leg => _marketData.GetOptionGreeksSeriesAsync(
-                    request.Symbol,
-                    leg.Expiration,
-                    leg.Strike,
-                    leg.Type == OptionType.Call ? "call" : "put",
-                    snapshotDay,
-                    dataEndDay,
-                    interval))
-                .ToArray();
-            List<List<OptionGreeksRow>> legSeries = (await Task.WhenAll(fetchTasks)).ToList();
-
-            for (int i = 0; i < legSeries.Count; i++)
+            Dictionary<DateOnly, Dictionary<DateTime, List<OptionGreeksRow>>> chainByTime =
+                new Dictionary<DateOnly, Dictionary<DateTime, List<OptionGreeksRow>>>();
+            foreach (DateOnly expiration in legs.Select(leg => leg.Expiration).Distinct())
             {
-                legSeries[i] = legSeries[i]
-                    .Where(r => r.ImpliedVol > 0.0001 && r.Bid > 0 && r.Ask > 0)
-                    .OrderBy(r => r.TimestampUtc)
-                    .ToList();
-                BridgeOvernightIv(legSeries[i]);
+                List<double> legStrikes = legs.Where(leg => leg.Expiration == expiration).Select(leg => leg.Strike).ToList();
+                List<double> allStrikes = await _marketData.GetStrikesAsync(request.Symbol, expiration);
+                List<double> smileStrikes = SelectSmileStrikes(allStrikes, legStrikes);
+                List<OptionGreeksRow> chain = await _marketData.GetOptionGreeksSmileWindowAsync(
+                    request.Symbol, expiration, snapshotDay, dataEndDay, interval, smileStrikes);
+                chainByTime[expiration] = BuildChainIndex(chain, snapshotUtc, maxExpiryUtc);
             }
 
             SortedSet<DateTime> timeSet = new SortedSet<DateTime>();
-            foreach (List<OptionGreeksRow> rows in legSeries)
+            foreach (Dictionary<DateTime, List<OptionGreeksRow>> index in chainByTime.Values)
             {
-                foreach (OptionGreeksRow row in rows)
+                foreach (DateTime ts in index.Keys)
                 {
-                    if (row.TimestampUtc >= snapshotUtc && row.TimestampUtc <= maxExpiryUtc)
-                    {
-                        timeSet.Add(row.TimestampUtc);
-                    }
+                    timeSet.Add(ts);
                 }
             }
             List<DateTime> timeAxis = timeSet.ToList();
@@ -299,6 +304,13 @@ namespace TestOptionStrategy.Server.Application.Services
             }
 
             List<double> spotAxis = BuildSpotAxis(snapshotSpot, legs, request.SpotRangePercent, request.SpotSamples);
+            TimeSpan tolerance = TimeSpan.FromMinutes(5);
+
+            double[] lastIv = new double[legs.Count];
+            for (int i = 0; i < legs.Count; i++)
+            {
+                lastIv[i] = legs[i].ImpliedVol;
+            }
 
             List<List<double>> valueSurface = new List<List<double>>();
             List<List<double>> deltaSurface = new List<List<double>>();
@@ -313,11 +325,36 @@ namespace TestOptionStrategy.Server.Application.Services
                 double actualSpot = 0;
                 for (int i = 0; i < legs.Count; i++)
                 {
-                    OptionGreeksRow? nearest = Nearest(legSeries[i], timeUtc);
-                    ivs[i] = nearest != null ? nearest.ImpliedVol : legs[i].ImpliedVol;
-                    if (actualSpot == 0 && nearest != null && nearest.UnderlyingPrice > 0)
+                    ResolvedLeg leg = legs[i];
+                    if (!chainByTime.TryGetValue(leg.Expiration, out Dictionary<DateTime, List<OptionGreeksRow>>? index))
                     {
-                        actualSpot = nearest.UnderlyingPrice;
+                        ivs[i] = leg.ImpliedVol;
+                        continue;
+                    }
+                    List<OptionGreeksRow> group = GroupAtTime(index, timeUtc, tolerance);
+                    if (group.Count == 0)
+                    {
+                        ivs[i] = leg.ImpliedVol;
+                        continue;
+                    }
+                    double spot = group.Where(r => r.UnderlyingPrice > 0).Select(r => r.UnderlyingPrice).FirstOrDefault();
+                    if (spot <= 0)
+                    {
+                        spot = snapshotSpot;
+                    }
+                    if (actualSpot == 0 && spot > 0)
+                    {
+                        actualSpot = spot;
+                    }
+                    OptionGreeksRow? own = group.FirstOrDefault(r => StrikesMatch(r.Strike, leg.Strike) && MarketDataService.NormalizeRight(r.Right) == (leg.Type == OptionType.Call ? "call" : "put"));
+                    ivs[i] = DeduceLegMarkIv(group, spot, riskFreeRate, leg.Strike, leg.Type, leg.ExpiryUtc, timeUtc, own);
+                    if (ivs[i] > 0)
+                    {
+                        lastIv[i] = ivs[i];
+                    }
+                    else
+                    {
+                        ivs[i] = lastIv[i];
                     }
                 }
                 if (actualSpot == 0)
@@ -581,41 +618,171 @@ namespace TestOptionStrategy.Server.Application.Services
             return "1h";
         }
 
-        private void BridgeOvernightIv(List<OptionGreeksRow> series)
+        private static Dictionary<DateTime, List<OptionGreeksRow>> BuildChainIndex(List<OptionGreeksRow> chain, DateTime fromUtc, DateTime toUtc)
         {
-            TimeZoneInfo timeZone = MarketClock.GetUsTimeZone();
-            double lastIv = 0;
-            DateOnly previousDate = default;
-            foreach (OptionGreeksRow row in series)
+            Dictionary<DateTime, List<OptionGreeksRow>> index = new Dictionary<DateTime, List<OptionGreeksRow>>();
+            foreach (OptionGreeksRow row in chain)
             {
-                DateOnly date = DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(row.TimestampUtc, timeZone));
-                if (previousDate != default && date != previousDate)
-                {
-                    row.ImpliedVol = lastIv;
-                }
-                lastIv = row.ImpliedVol;
-                previousDate = date;
-            }
-        }
-
-        private OptionGreeksRow? Nearest(List<OptionGreeksRow> rows, DateTime timeUtc)
-        {
-            OptionGreeksRow? best = null;
-            double bestSeconds = double.MaxValue;
-            foreach (OptionGreeksRow row in rows)
-            {
-                if (row.ImpliedVol <= 0.0001 || row.UnderlyingPrice <= 0 || row.Bid <= 0 || row.Ask <= 0)
+                if (row.Bid <= 0 || row.Ask <= 0 || row.ImpliedVol <= 0.0001)
                 {
                     continue;
                 }
-                double seconds = Math.Abs((row.TimestampUtc - timeUtc).TotalSeconds);
+                if (row.TimestampUtc < fromUtc || row.TimestampUtc > toUtc)
+                {
+                    continue;
+                }
+                if (!index.TryGetValue(row.TimestampUtc, out List<OptionGreeksRow>? list))
+                {
+                    list = new List<OptionGreeksRow>();
+                    index[row.TimestampUtc] = list;
+                }
+                list.Add(row);
+            }
+            return index;
+        }
+
+        private static List<OptionGreeksRow> GroupAtTime(Dictionary<DateTime, List<OptionGreeksRow>> index, DateTime timeUtc, TimeSpan tolerance)
+        {
+            DateTime? best = null;
+            double bestSeconds = double.MaxValue;
+            foreach (DateTime ts in index.Keys)
+            {
+                double seconds = Math.Abs((ts - timeUtc).TotalSeconds);
                 if (seconds < bestSeconds)
                 {
                     bestSeconds = seconds;
-                    best = row;
+                    best = ts;
                 }
             }
-            return best;
+            if (best == null || bestSeconds > tolerance.TotalSeconds)
+            {
+                return new List<OptionGreeksRow>();
+            }
+            return index[best.Value];
+        }
+
+        private double DeduceLegMarkIv(
+            List<OptionGreeksRow> group,
+            double spot,
+            double riskFreeRate,
+            double strike,
+            OptionType optionType,
+            DateTime expiryUtc,
+            DateTime timeUtc,
+            OptionGreeksRow? own)
+        {
+            List<(double X, double Y, double Weight)> points = BuildSmilePoints(group, spot);
+            double[] coeff = SmileFitter.FitQuadratic(points);
+            double ivSmile = SmileFitter.EvaluateQuadratic(coeff, Math.Log(strike / spot));
+
+            if (double.IsNaN(ivSmile) || ivSmile <= 0)
+            {
+                return own != null ? own.ImpliedVol : 0;
+            }
+            if (own == null || own.Bid <= 0 || own.Ask <= 0)
+            {
+                return 0;
+            }
+
+            double daysToExpiry = (expiryUtc - timeUtc).TotalDays;
+            if (daysToExpiry <= 0)
+            {
+                return ivSmile;
+            }
+
+            double ivBid = _greeks.CalculateImpliedVolatility(own.Bid, spot, strike, daysToExpiry, riskFreeRate, optionType);
+            double ivAsk = _greeks.CalculateImpliedVolatility(own.Ask, spot, strike, daysToExpiry, riskFreeRate, optionType);
+            return ClampIv(ivSmile, ivBid, ivAsk);
+        }
+
+        private static List<(double X, double Y, double Weight)> BuildSmilePoints(List<OptionGreeksRow> group, double spot)
+        {
+            List<(double X, double Y, double Weight)> points = new List<(double X, double Y, double Weight)>();
+            foreach (IGrouping<double, OptionGreeksRow> strikeGroup in group
+                .Where(r => r.ImpliedVol > 0.0001 && r.Bid > 0 && r.Ask > 0)
+                .GroupBy(r => r.Strike))
+            {
+                double strike = strikeGroup.Key;
+                OptionGreeksRow? row = null;
+                foreach (OptionGreeksRow r in strikeGroup)
+                {
+                    bool isCall = MarketDataService.NormalizeRight(r.Right) == "call";
+                    bool otm = isCall ? strike > spot : strike <= spot;
+                    if (otm)
+                    {
+                        row = r;
+                        break;
+                    }
+                }
+                if (row == null)
+                {
+                    continue;
+                }
+                double x = Math.Log(strike / spot);
+                double spread = row.Ask - row.Bid;
+                double weight = 1.0 / Math.Max(spread, 0.05);
+                points.Add((x, row.ImpliedVol, weight));
+            }
+            return points;
+        }
+
+        private static double ClampIv(double ivSmile, double ivBid, double ivAsk)
+        {
+            if (double.IsNaN(ivBid) && double.IsNaN(ivAsk))
+            {
+                return ivSmile;
+            }
+            if (double.IsNaN(ivBid))
+            {
+                return Math.Min(ivAsk, ivSmile);
+            }
+            if (double.IsNaN(ivAsk))
+            {
+                return Math.Max(ivBid, ivSmile);
+            }
+            double lo = Math.Min(ivBid, ivAsk);
+            double hi = Math.Max(ivBid, ivAsk);
+            return Math.Max(lo, Math.Min(hi, ivSmile));
+        }
+
+        private static bool StrikesMatch(double a, double b)
+        {
+            return Math.Abs(a - b) < 0.005;
+        }
+
+        private static List<double> SelectSmileStrikes(List<double> allStrikes, List<double> legStrikes)
+        {
+            const int maxStrikes = 15;
+            double minK = legStrikes.Min();
+            double maxK = legStrikes.Max();
+            double lower = minK - 25.0;
+            double upper = maxK + 25.0;
+
+            List<double> inWindow = allStrikes.Where(k => k >= lower && k <= upper).OrderBy(k => k).ToList();
+            List<double> selected;
+            if (inWindow.Count <= maxStrikes)
+            {
+                selected = inWindow;
+            }
+            else
+            {
+                selected = new List<double>();
+                int step = (int)Math.Ceiling((double)inWindow.Count / maxStrikes);
+                for (int i = 0; i < inWindow.Count; i += step)
+                {
+                    selected.Add(inWindow[i]);
+                }
+            }
+
+            foreach (double k in legStrikes)
+            {
+                if (!selected.Any(s => Math.Abs(s - k) < 0.005))
+                {
+                    selected.Add(k);
+                }
+            }
+            selected.Sort();
+            return selected;
         }
 
         private async Task<(List<SpotLinePoint> Value, List<SpotLinePoint> Delta, List<SpotLinePoint> Gamma)> BuildSpotLinesAsync(

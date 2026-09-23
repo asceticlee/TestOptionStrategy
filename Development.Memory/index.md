@@ -24,6 +24,7 @@ Angular reference in `Temp/OptionPricing3DSurface`.
 | [THETADATA-V3.md](THETADATA-V3.md) | Everything learned about the ThetaData v3 REST API and the local terminal |
 | [GREEKS-AND-INTEREST-RATE.md](GREEKS-AND-INTEREST-RATE.md) | How Greeks are computed, the interest-rate source, formula notes |
 | [DATABASE.md](DATABASE.md) | Schema, connection details, Dapper conventions |
+| [DATA-LOADING.md](DATA-LOADING.md) | Bulk-load / refresh the DB (backfill + update CLI commands) |
 
 ## Reference projects (read-only, not part of this repo)
 
@@ -65,9 +66,24 @@ Angular reference in `Temp/OptionPricing3DSurface`.
 Stop with `Deploy/stop-server.sh` and `Deploy/stop-web.sh` (idempotent; logs in `Deploy/logs/`,
 PID files in `Deploy/*.pid`).
 
+### Loading / refreshing market data
+
+Data is not auto-loaded — the app only caches ThetaData responses as you use it. To bulk-load or
+refresh the database use the loader CLI (builds the server, then runs it in console mode; the web
+server is not started):
+
+```sh
+Deploy/update-data.sh                 # resume from last stored date -> yesterday
+Deploy/backfill.sh --from 2023-01-01  # load full option chain from 2023 (see DATA-LOADING.md)
+```
+
+The Theta Terminal must be running (`:25503`). See [DATA-LOADING.md](DATA-LOADING.md) for options
+(`--interval`, `--strike-range`, `--lead-days`) and the scale caveats (a full-chain 5m backfill is
+~450k rows/day; use `--strike-range`/longer intervals for wide ranges).
+
 Open `http://localhost:3000`. The header shows the underlying, an expiration strip (month tabs +
 date chips), and a **strike ruler** — add legs, then drag each pill on the ruler to move its strike
-(above axis = long, below = short; green = call, red = put). The stats row shows net debit, max
+(above axis = short, below = long; green = call, red = put). The stats row shows net debit, max
 loss/profit and breakevens. Click "Plot surface" to render the 3D Value / Delta / Gamma surfaces
 with the realized spot path traced in orange.
 

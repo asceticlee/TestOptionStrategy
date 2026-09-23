@@ -158,7 +158,10 @@ surface), and **3D Real** (the observed-IV surface).
   the "Time step (min)" interval and re-prices each time-slice with the IV **actually observed** at that
   time. This shows the real, non-smooth surface of how the option's value actually evolved (spot +
   IV), rather than the theoretical one. Per-leg greeks fetches are **parallelised** (`Task.WhenAll`);
-  a single-leg or 4-leg request completes in ~1 s.
+  a single-leg or 4-leg request completes in ~1 s. The legs are marked via **Black-Scholes at a
+  smile-regularized IV** — the IV is fit from the surrounding strikes (quadratic smile in log-moneyness)
+  and clamped to the leg's bid/ask — see "3D Real choppiness" / "Smile-regularized IV" in
+  GREEKS-AND-INTEREST-RATE.md.
 
 Trade Setup, top → bottom:
 
@@ -171,7 +174,7 @@ Trade Setup, top → bottom:
    moment). This is our "as-of time" concept, which OptionStrat lacks.
 4. **StrikeRuler (option legs panel)** — horizontal strike axis with tick marks + labels and a dashed
    spot marker (**symbol + spot price**, e.g. `SPY 764.10`). One pill per leg positioned by strike:
-   - **Above the axis = LONG, below the axis = SHORT.**
+   - **Above the axis = SHORT, below the axis = LONG.**
    - **Colour by right: green = call (`#51B349`), red = put (`#B2242F`).**
    - Pill text is `{strike}{C|P}` (e.g. `750C`).
    - **Drag a pill left/right to change its strike** (snaps to the available strikes for that leg's
@@ -179,8 +182,8 @@ Trade Setup, top → bottom:
      to swap call ↔ put**. Grabbing/dragging a pill does **not** scroll the page (scrolling to the
      config panel was removed — it disrupted the drag gesture).
    - Each pill has an **×** (right side) to remove that leg directly from the ruler.
-   - Each pill has a **small arrow** pointing to its strike on the axis: long pills (above) point down,
-     short pills (below) point up.
+   - Each pill has a **small arrow** pointing to its strike on the axis: short pills (above) point down,
+     long pills (below) point up.
    - **The axis is a fixed, spot-centred window** `[spot − W, spot + W]` with `W = spot ×
      SpotRangePercent/100`. The scale never changes when dragging a leg — only the pill moves — and the
      underlying price always sits at the centre of the ruler. The window shares the same X range as the
@@ -218,9 +221,18 @@ Trade Setup, top → bottom:
    negative P&L far from the strike). For the **3D Real** surface the observed IV series is filtered to
    valid quotes (bid>0 & ask>0) and **bridged overnight** (the first valid quote of each day carries the
    previous day's close IV), which removes the garbage/empty open-quote IV that caused a spurious chasm.
-   The hover tooltip shows the real timestamp (surface uses a 2D `customdata` array + `hovertemplate`
-   `%{customdata}`; the orange line uses 1D `customdata`). The Y-axis tick labels are dense (~50,
-   `MM-DD HH:mm`, 8px) so they align with the orange line's per-time-step spot path.
+    The hover tooltip shows the real timestamp (surface uses a **transposed 2D `text`** array +
+    `hovertemplate` `%{text}`; the orange line uses 1D `text`). Gotcha: Plotly's 3D hover builds the
+    point via `selection.index = [xIndex, yIndex]` (`surface/convert.js handlePick`) and
+    `fx/helpers.js appendArrayPointValue` then reads every 2D per-point array (`text`, `customdata`,
+    `hovertext`) as `val[xIndex][yIndex]` — i.e. **transposed** relative to `z`, which is laid out
+    `z[yIndex][xIndex]`. So the array must be supplied transposed: `text[x][y]`, built as
+    `data.x.map(() => yLabels)` (so `text[xIndex][yIndex] = yLabels[yIndex]`). Supplying it like `z`
+    gives transposed/wrong times and, past a bound, a literal `%{text}`.
+    The Y-axis tick labels are dense (~50, `MM-DD HH:mm`, 8px) so they align with the orange line's
+    per-time-step spot path. `scene.aspectmode` is forced to **`"cube"`** — the default `"auto"` flips
+    between cube and data-proportional depending on whether `max(range)/min(range)` exceeds 4, so the
+    theoretical (z-range 469) rendered cube while the real (z-range 261) rendered narrow-x rectangular.
 
 Scroll behaviour: horizontal scroll containers (`DateStrip`, expiration chips/month tabs, strike ruler,
 stats strip) hide their scrollbars (`scrollbar-width: none` + `::-webkit-scrollbar { display: none }`)

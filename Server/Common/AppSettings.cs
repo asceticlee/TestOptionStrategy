@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace TestOptionStrategy.Server.Common
 {
     public class AppSettings
@@ -12,6 +14,12 @@ namespace TestOptionStrategy.Server.Common
         public static string GetSetting(string key)
         {
             return _configuration[key] ?? string.Empty;
+        }
+
+        public static double GetDouble(string key, double fallback)
+        {
+            string value = GetSetting(key);
+            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) ? parsed : fallback;
         }
     }
 }

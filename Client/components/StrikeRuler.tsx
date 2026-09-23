@@ -143,10 +143,10 @@ export default function StrikeRuler({
     }
     const midY = rect.top + rect.height / 2;
     const currentSide = legsRef.current[index].side;
-    if (e.clientY < midY - 12 && currentSide !== "long") {
-      onSideChange(index, "long");
-    } else if (e.clientY > midY + 12 && currentSide !== "short") {
+    if (e.clientY < midY - 12 && currentSide !== "short") {
       onSideChange(index, "short");
+    } else if (e.clientY > midY + 12 && currentSide !== "long") {
+      onSideChange(index, "long");
     }
   };
 
@@ -193,7 +193,7 @@ export default function StrikeRuler({
           const lane = lanesByIndex.get(index) ?? 0;
           const offsetPx = lane * LANE_HEIGHT;
           const verticalStyle =
-            leg.side === "long"
+            leg.side === "short"
               ? { bottom: `calc(50% + ${8 + offsetPx}px)` }
               : { top: `calc(50% + ${8 + offsetPx}px)` };
           return (
@@ -202,7 +202,7 @@ export default function StrikeRuler({
               className={[
                 "leg-chip",
                 leg.right,
-                leg.side === "long" ? "above" : "below",
+                leg.side === "short" ? "above" : "below",
                 selectedIndex === index ? "selected" : "",
               ]
                 .filter(Boolean)

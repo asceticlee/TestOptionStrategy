@@ -1,4 +1,5 @@
 using Serilog;
+using TestOptionStrategy.Server.Common;
 using TestOptionStrategy.Server.Domain.Data;
 using TestOptionStrategy.Server.Domain.ThetaData;
 
@@ -12,6 +13,9 @@ namespace TestOptionStrategy.Server.Application.Services
         private readonly SpotQuoteRepository _spotQuoteRepository;
         private readonly OptionGreeksRepository _optionGreeksRepository;
         private readonly RiskFreeRateRepository _riskFreeRateRepository;
+        private readonly GreeksCalculator _greeks = new GreeksCalculator();
+        private readonly double _spreadOutlierK = AppSettings.GetDouble("ThetaData:SpreadOutlierK", 3.0);
+        private readonly double _spreadOutlierFloor = AppSettings.GetDouble("ThetaData:SpreadOutlierFloor", 0.25);
 
         public MarketDataService(
             ThetaDataClient thetaData,
@@ -84,6 +88,9 @@ namespace TestOptionStrategy.Server.Application.Services
             List<OptionGreeksRow> rows = await _thetaData.GetOptionGreeksFirstOrderAsync(
                 symbol, expiration, strike, right, snapshotDay, snapshotDay, "1m");
 
+            double riskFreeRateDecimal = await GetRiskFreeRateAsync(snapshotDay) / 100.0;
+            ApplyMidImpliedVol(rows, riskFreeRateDecimal);
+
             await StoreOptionGreeksAsync(symbol, expiration, strike, right, rows);
 
             OptionGreeksRow? best = rows
@@ -104,8 +111,60 @@ namespace TestOptionStrategy.Server.Application.Services
         {
             List<OptionGreeksRow> rows = await _thetaData.GetOptionGreeksFirstOrderAsync(
                 symbol, expiration, strike, right, startDate, endDate, interval);
+
+            double riskFreeRateDecimal = await GetRiskFreeRateAsync(startDate) / 100.0;
+            ApplyMidImpliedVol(rows, riskFreeRateDecimal);
+
             await StoreOptionGreeksAsync(symbol, expiration, strike, right, rows);
             return rows;
+        }
+
+        public async Task<List<OptionGreeksRow>> GetOptionGreeksSmileWindowAsync(
+            string symbol,
+            DateOnly expiration,
+            DateOnly startDate,
+            DateOnly endDate,
+            string interval,
+            List<double> strikes)
+        {
+            double riskFreeRateDecimal = await GetRiskFreeRateAsync(startDate) / 100.0;
+
+            const int chunkDays = 14;
+            List<(DateOnly Start, DateOnly End)> chunks = new List<(DateOnly, DateOnly)>();
+            for (DateOnly chunkStart = startDate; chunkStart <= endDate; chunkStart = chunkStart.AddDays(chunkDays))
+            {
+                DateOnly chunkEnd = chunkStart.AddDays(chunkDays - 1) < endDate ? chunkStart.AddDays(chunkDays - 1) : endDate;
+                chunks.Add((chunkStart, chunkEnd));
+            }
+
+            List<(int StrikeIndex, DateOnly Start, DateOnly End)> work = new List<(int, DateOnly, DateOnly)>();
+            for (int s = 0; s < strikes.Count; s++)
+            {
+                foreach ((DateOnly Start, DateOnly End) chunk in chunks)
+                {
+                    work.Add((s, chunk.Start, chunk.End));
+                }
+            }
+
+            List<OptionGreeksRow>[] buckets = new List<OptionGreeksRow>[work.Count];
+            await Parallel.ForEachAsync(
+                Enumerable.Range(0, work.Count),
+                new ParallelOptions { MaxDegreeOfParallelism = 4 },
+                async (i, cancellationToken) =>
+                {
+                    (int StrikeIndex, DateOnly Start, DateOnly End) item = work[i];
+                    List<OptionGreeksRow> rows = await _thetaData.GetOptionGreeksFirstOrderAsync(
+                        symbol, expiration, strikes[item.StrikeIndex], "both", item.Start, item.End, interval);
+                    ApplyMidImpliedVol(rows, riskFreeRateDecimal);
+                    buckets[i] = rows;
+                });
+
+            List<OptionGreeksRow> result = new List<OptionGreeksRow>();
+            foreach (List<OptionGreeksRow> bucket in buckets)
+            {
+                result.AddRange(bucket);
+            }
+            return result;
         }
 
         public async Task<List<(DateOnly Date, string Type)>> GetYearHolidaysAsync(int year)
@@ -139,9 +198,19 @@ namespace TestOptionStrategy.Server.Application.Services
 
         public async Task<List<SpotQuoteRow>> GetSpotQuotesAsync(string symbol, DateOnly from, DateOnly to, string interval)
         {
-            List<SpotQuoteRow> quotes = await _thetaData.GetStockQuotesAsync(symbol, from, to, interval);
-            await StoreSpotQuotesAsync(symbol, quotes);
-            return quotes;
+            const int chunkDays = 20;
+            List<SpotQuoteRow> result = new List<SpotQuoteRow>();
+            for (DateOnly chunkStart = from; chunkStart <= to; chunkStart = chunkStart.AddDays(chunkDays))
+            {
+                DateOnly chunkEnd = chunkStart.AddDays(chunkDays - 1) < to ? chunkStart.AddDays(chunkDays - 1) : to;
+                List<SpotQuoteRow> quotes = await _thetaData.GetStockQuotesAsync(symbol, chunkStart, chunkEnd, interval);
+                if (quotes.Count > 0)
+                {
+                    await StoreSpotQuotesAsync(symbol, quotes);
+                    result.AddRange(quotes);
+                }
+            }
+            return result;
         }
 
         public static string NormalizeRight(string right)
@@ -156,6 +225,63 @@ namespace TestOptionStrategy.Server.Application.Services
                 return "put";
             }
             return lower;
+        }
+
+        private void ApplyMidImpliedVol(List<OptionGreeksRow> rows, double riskFreeRateDecimal)
+        {
+            foreach (OptionGreeksRow row in rows)
+            {
+                OptionType optionType = NormalizeRight(row.Right) == "put" ? OptionType.Put : OptionType.Call;
+                double daysToExpiry = (MarketClock.ExpiryUtc(row.Expiration) - row.TimestampUtc).TotalDays;
+                row.ImpliedVol = _greeks.CalculateMidImpliedVolatility(
+                    optionType, row.UnderlyingPrice, row.Strike, daysToExpiry, riskFreeRateDecimal, row.Bid, row.Ask);
+            }
+            ApplySpreadOutlierFilter(rows, _spreadOutlierK, _spreadOutlierFloor);
+        }
+
+        public static void ApplySpreadOutlierFilter(List<OptionGreeksRow> rows, double k, double floor)
+        {
+            TimeZoneInfo timeZone = MarketClock.GetUsTimeZone();
+            IEnumerable<IGrouping<(DateOnly Expiration, double Strike, string Right, DateOnly Day), OptionGreeksRow>> groups = rows
+                .Where(r => r.Bid > 0 && r.Ask > 0)
+                .GroupBy(r => (
+                    r.Expiration,
+                    r.Strike,
+                    NormalizeRight(r.Right),
+                    DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(r.TimestampUtc, timeZone))));
+
+            foreach (IGrouping<(DateOnly Expiration, double Strike, string Right, DateOnly Day), OptionGreeksRow> group in groups)
+            {
+                List<double> spreads = group.Select(r => r.Ask - r.Bid).ToList();
+                if (spreads.Count < 4)
+                {
+                    continue;
+                }
+                spreads.Sort();
+                double q1 = Percentile(spreads, 0.25);
+                double q3 = Percentile(spreads, 0.75);
+                double threshold = Math.Max(q3 + k * (q3 - q1), floor);
+                foreach (OptionGreeksRow row in group)
+                {
+                    if ((row.Ask - row.Bid) > threshold)
+                    {
+                        row.ImpliedVol = 0;
+                    }
+                }
+            }
+        }
+
+        private static double Percentile(List<double> sorted, double fraction)
+        {
+            double position = fraction * (sorted.Count - 1);
+            int lower = (int)Math.Floor(position);
+            int upper = (int)Math.Ceiling(position);
+            if (lower == upper)
+            {
+                return sorted[lower];
+            }
+            double weight = position - lower;
+            return sorted[lower] * (1.0 - weight) + sorted[upper] * weight;
         }
 
         private async Task StoreOptionGreeksAsync(string symbol, DateOnly expiration, double strike, string right, List<OptionGreeksRow> rows)
