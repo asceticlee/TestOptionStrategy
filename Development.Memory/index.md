@@ -83,8 +83,10 @@ The Theta Terminal must be running (`:25503`). See [DATA-LOADING.md](DATA-LOADIN
 
 Open `http://localhost:3000`. The header shows the underlying, an expiration strip (month tabs +
 date chips), and a **strike ruler** — add legs, then drag each pill on the ruler to move its strike
-(above axis = short, below = long; green = call, red = put). The stats row shows net debit, max
-loss/profit and breakevens. Click "Plot surface" to render the 3D Value / Delta / Gamma surfaces
+(above axis = short, below = long; green = call, red = put). Each leg panel shows its own greeks +
+bid/ask (only the leg you actually changed re-fetches), and a **Position** strip aggregates the net
+(combined) Δ/Γ/Θ/ν + bid/ask across all legs. The stats row shows net debit, max loss/profit and
+breakevens. Click "Plot surface" to render the 3D Value / Delta / Gamma surfaces
 with the realized spot path traced in orange.
 
 > When working on a remote machine over VS Code port-forwarding, only `:3000` needs forwarding:

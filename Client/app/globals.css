@@ -866,3 +866,24 @@ button:disabled {
   font-size: 12px;
   color: #8b91a8;
 }
+
+/* ── Position (combined) greeks ─────────────────────────── */
+.position-greeks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  background: #1a1a33;
+  border: 1px solid #2a2a4a;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.position-greeks-label {
+  font-size: 10px;
+  color: #4b9dd9;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  margin-right: 4px;
+}

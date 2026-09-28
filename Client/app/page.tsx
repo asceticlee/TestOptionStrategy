@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DateStrip from "../components/DateStrip";
 import LegConfigPanel from "../components/LegConfigPanel";
+import PositionGreeks from "../components/PositionGreeks";
 import StatsStrip from "../components/StatsStrip";
 import StrikeRuler from "../components/StrikeRuler";
 import SurfacePanel from "../components/SurfacePanel";
 import {
+  computeLegGreeks,
   computeRealSurface,
   computeStats,
   computeSurface,
@@ -18,6 +20,7 @@ import {
 import type {
   Leg,
   OptionLegRequest,
+  StatsLeg,
   StatsResponse,
   SurfaceResponse,
 } from "../lib/types";
@@ -108,11 +111,20 @@ export default function Page() {
   const [view, setView] = useState<"trade" | "theoretical" | "real">("trade");
   const [realResponse, setRealResponse] = useState<SurfaceResponse | null>(null);
   const [realLoading, setRealLoading] = useState<boolean>(false);
+  const [legGreeks, setLegGreeks] = useState<Record<number, StatsLeg | null>>({});
+  const [legGreeksLoading, setLegGreeksLoading] = useState<
+    Record<number, boolean>
+  >({});
 
   const loadedExpirations = useRef<Set<string>>(new Set());
   const idCounter = useRef(0);
+  const legSigRef = useRef<Record<number, string>>({});
+  const legTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({});
 
-  const availableExpirations = expirations.filter((exp) => exp >= date);
+  const availableExpirations = useMemo(
+    () => expirations.filter((exp) => exp >= date),
+    [expirations, date],
+  );
 
   const loadStrikes = useCallback(
     (exp: string) => {
@@ -232,6 +244,40 @@ export default function Page() {
     };
   }, [symbol, date, time, legs, timeStepMinutes, spotSamples, spotRangePercent]);
 
+  useEffect(() => {
+    const validLegs = legs.filter((l) => l.expiration && l.strike > 0);
+    for (const leg of validLegs) {
+      const sig = `${symbol}|${date}|${time}|${leg.right}|${leg.strike}|${leg.expiration}`;
+      const prevSig = legSigRef.current[leg.id];
+      if (prevSig === sig) continue;
+      legSigRef.current[leg.id] = sig;
+
+      const existing = legTimersRef.current[leg.id];
+      if (existing) clearTimeout(existing);
+      setLegGreeksLoading((prev) => ({ ...prev, [leg.id]: true }));
+      legTimersRef.current[leg.id] = setTimeout(async () => {
+        try {
+          const g = await computeLegGreeks({
+            symbol,
+            snapshotDate: date,
+            snapshotTime: time,
+            leg: {
+              right: leg.right,
+              strike: leg.strike,
+              expiration: leg.expiration,
+              contracts: 1,
+            },
+          });
+          setLegGreeks((prev) => ({ ...prev, [leg.id]: g }));
+        } catch {
+          setLegGreeks((prev) => ({ ...prev, [leg.id]: null }));
+        } finally {
+          setLegGreeksLoading((prev) => ({ ...prev, [leg.id]: false }));
+        }
+      }, 200);
+    }
+  }, [symbol, date, time, legs]);
+
   const addLeg = useCallback(() => {
     const exp =
       (legs.length > 0 && legs[legs.length - 1].expiration) ||
@@ -253,22 +299,27 @@ export default function Page() {
     ]);
   }, [legs, availableExpirations, loadStrikes, strikesByExpiration, snapshotSpot]);
 
-  const updateLeg = useCallback((index: number, patch: Partial<Leg>) => {
+  const updateLeg = useCallback((id: number | undefined, patch: Partial<Leg>) => {
+    if (id == null) return;
     setLegs((prev) =>
-      prev.map((leg, i) => (i === index ? { ...leg, ...patch } : leg)),
+      prev.map((leg) => (leg.id === id ? { ...leg, ...patch } : leg)),
     );
   }, []);
 
   const changeLegExpiration = useCallback(
-    (index: number, exp: string) => {
+    (id: number | undefined, exp: string) => {
+      if (id == null) return;
       loadStrikes(exp);
-      updateLeg(index, { expiration: exp });
+      setLegs((prev) =>
+        prev.map((leg) => (leg.id === id ? { ...leg, expiration: exp } : leg)),
+      );
     },
-    [loadStrikes, updateLeg],
+    [loadStrikes],
   );
 
-  const removeLeg = useCallback((index: number) => {
-    setLegs((prev) => prev.filter((_, i) => i !== index));
+  const removeLeg = useCallback((id: number | undefined) => {
+    if (id == null) return;
+    setLegs((prev) => prev.filter((leg) => leg.id !== id));
   }, []);
 
   const handleCompute = useCallback(async () => {
@@ -512,30 +563,32 @@ export default function Page() {
         strikesByExpiration={strikesByExpiration}
         selectedIndex={null}
         onSelect={() => {}}
-        onStrikeChange={(i, s) => updateLeg(i, { strike: s })}
-        onSideChange={(i, s) => updateLeg(i, { side: s })}
-        onRightChange={(i, r) => updateLeg(i, { right: r })}
-        onRemove={removeLeg}
+        onStrikeChange={(i, s) => updateLeg(legs[i]?.id, { strike: s })}
+        onSideChange={(i, s) => updateLeg(legs[i]?.id, { side: s })}
+        onRightChange={(i, r) => updateLeg(legs[i]?.id, { right: r })}
+        onRemove={(i) => removeLeg(legs[i]?.id)}
       />
 
       <button className="pill add-leg" onClick={addLeg}>
         Add Leg +
       </button>
 
-      {legs.map((leg, index) => (
+      {legs.map((leg) => (
         <LegConfigPanel
           key={leg.id}
           leg={leg}
-          symbol={symbol}
+          greeks={legGreeks[leg.id] ?? null}
+          loading={legGreeksLoading[leg.id] ?? false}
           snapshotDate={date}
-          snapshotTime={time}
           availableExpirations={availableExpirations}
           strikes={strikesByExpiration[leg.expiration] ?? []}
-          onUpdate={(patch) => updateLeg(index, patch)}
-          onChangeExpiration={(exp) => changeLegExpiration(index, exp)}
-          onRemove={() => removeLeg(index)}
+          onUpdate={updateLeg}
+          onChangeExpiration={changeLegExpiration}
+          onRemove={removeLeg}
         />
       ))}
+
+      <PositionGreeks legs={legs} greeksById={legGreeks} />
 
       <StatsStrip stats={stats} />
 

@@ -1,27 +1,26 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { memo, useState } from "react";
 import ExpirationStrip from "./ExpirationStrip";
-import { computeLegGreeks } from "../lib/api";
 import type { Leg, StatsLeg } from "../lib/types";
 
 interface LegConfigPanelProps {
   leg: Leg;
-  symbol: string;
+  greeks: StatsLeg | null;
+  loading: boolean;
   snapshotDate: string;
-  snapshotTime: string;
   availableExpirations: string[];
   strikes: number[];
-  onUpdate: (patch: Partial<Leg>) => void;
-  onChangeExpiration: (exp: string) => void;
-  onRemove: () => void;
+  onUpdate: (id: number, patch: Partial<Leg>) => void;
+  onChangeExpiration: (id: number, exp: string) => void;
+  onRemove: (id: number) => void;
 }
 
-export default function LegConfigPanel({
+function LegConfigPanel({
   leg,
-  symbol,
+  greeks,
+  loading,
   snapshotDate,
-  snapshotTime,
   availableExpirations,
   strikes,
   onUpdate,
@@ -29,40 +28,6 @@ export default function LegConfigPanel({
   onRemove,
 }: LegConfigPanelProps) {
   const [collapsed, setCollapsed] = useState(false);
-  const [greeks, setGreeks] = useState<StatsLeg | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    const right = leg.right;
-    const strike = leg.strike;
-    const expiration = leg.expiration;
-    if (!expiration || !strike || strike <= 0) {
-      setGreeks(null);
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    const timer = setTimeout(async () => {
-      try {
-        const g = await computeLegGreeks({
-          symbol,
-          snapshotDate,
-          snapshotTime,
-          leg: { right, strike, expiration, contracts: 1 },
-        });
-        if (!cancelled) setGreeks(g);
-      } catch {
-        if (!cancelled) setGreeks(null);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }, 200);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [symbol, snapshotDate, snapshotTime, leg.right, leg.strike, leg.expiration]);
 
   return (
     <div className="leg-config-panel">
@@ -105,7 +70,7 @@ export default function LegConfigPanel({
           className="secondary"
           onClick={(e) => {
             e.stopPropagation();
-            onRemove();
+            onRemove(leg.id);
           }}
         >
           Remove
@@ -118,7 +83,7 @@ export default function LegConfigPanel({
             availableExpirations={availableExpirations}
             snapshotDate={snapshotDate}
             selected={leg.expiration}
-            onSelect={onChangeExpiration}
+            onSelect={(exp) => onChangeExpiration(leg.id, exp)}
           />
           <div className="leg-config-controls">
             <div className="field">
@@ -126,7 +91,7 @@ export default function LegConfigPanel({
               <select
                 value={leg.side}
                 onChange={(e) =>
-                  onUpdate({ side: e.target.value as "long" | "short" })
+                  onUpdate(leg.id, { side: e.target.value as "long" | "short" })
                 }
               >
                 <option value="long">Long</option>
@@ -138,7 +103,7 @@ export default function LegConfigPanel({
               <select
                 value={leg.right}
                 onChange={(e) =>
-                  onUpdate({ right: e.target.value as "call" | "put" })
+                  onUpdate(leg.id, { right: e.target.value as "call" | "put" })
                 }
               >
                 <option value="call">Call</option>
@@ -149,7 +114,9 @@ export default function LegConfigPanel({
               <label>Strike</label>
               <select
                 value={leg.strike}
-                onChange={(e) => onUpdate({ strike: Number(e.target.value) })}
+                onChange={(e) =>
+                  onUpdate(leg.id, { strike: Number(e.target.value) })
+                }
               >
                 {strikes.map((s) => (
                   <option key={s} value={s}>
@@ -164,7 +131,9 @@ export default function LegConfigPanel({
                 type="number"
                 min={1}
                 value={leg.contracts}
-                onChange={(e) => onUpdate({ contracts: Number(e.target.value) })}
+                onChange={(e) =>
+                  onUpdate(leg.id, { contracts: Number(e.target.value) })
+                }
                 style={{ width: 80 }}
               />
             </div>
@@ -214,3 +183,5 @@ export default function LegConfigPanel({
     </div>
   );
 }
+
+export default memo(LegConfigPanel);

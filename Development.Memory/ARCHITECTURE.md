@@ -139,6 +139,8 @@ Client/
     DateStrip.tsx       # horizontal drag-scrollable snapshot-date strip (month header + clickable dates)
     ExpirationStrip.tsx # "EXPIRATION: Nd" + month tabs + per-expiration date chips
     StrikeRuler.tsx     # strike ruler with draggable leg pills (see conventions below)
+    LegConfigPanel.tsx  # per-leg collapsible config + greeks row (pure display, memoized)
+    PositionGreeks.tsx  # combined (net) position greeks + bid/ask strip
     StatsStrip.tsx      # 5-cell stats row (net debit/credit, max loss, max profit, pop, breakevens)
     SurfacePanel.tsx    # Plotly 3D surface component (value/delta/gamma), synced cameras
   lib/
@@ -200,18 +202,31 @@ Trade Setup, top → bottom:
    `id`), directly under the "Add Leg" button. Each panel is **collapsible** (click its header to
    toggle): expanded shows its own **expiration ruler** (`ExpirationStrip`) + Side / Call-Put / Strike /
    Qty controls + a **greeks row** (Bid, Ask, Delta, Gamma, Theta, Vega, IV); collapsed shows a single
-   compact summary row (`Long 762C · 2 · Exp 2026-09-18 · Δ … · IV … · bid/ask`). Each panel fetches its
-   **own** greeks via `POST /api/surface/leg-greeks` (200 ms debounce, `…`/`Recalculating…` while
-   fetching) — so dragging one leg refreshes only that leg, **one-to-one, without touching the others**.
+   compact summary row (`Long 762C · 2 · Exp 2026-09-18 · Δ … · IV … · bid/ask`). The panel is a **pure
+   display component** (`React.memo`): greeks fetching no longer lives inside it. The **page** owns the
+   per-leg greeks state (`legGreeks` / `legGreeksLoading`, keyed by leg `id`) and drives it with a
+   single effect that **monitors which leg actually changed** — it stores a per-leg signature
+   (`symbol|date|time|right|strike|expiration`) in a ref and only re-fetches `POST /api/surface/leg-greeks`
+   (200 ms debounce, `…`/`Recalculating…` while fetching) for legs whose signature differs. Dragging one
+   pill therefore refreshes **only that leg**; the other panels are not re-fetched and (thanks to `memo`
+   + stable `id`-based callbacks) not even re-rendered. The callbacks are all `id`-based (`updateLeg(id,
+   patch)`, `removeLeg(id)`, `changeLegExpiration(id, exp)`) so they stay referentially stable; the
+   `StrikeRuler` still speaks in array indices, which `page.tsx` maps to `legs[i].id`.
    Other details:
    - Header badge like `Long 420C · 1` (side + `{strike}{C|P}` + `· {qty}`) so the contract count is
      never confused with the strike.
    - A **new** leg defaults to the available strike **nearest the snapshot spot** (ATM), not the lowest.
-7. **StatsStrip** — NET DEBIT/CREDIT, MAX LOSS, MAX PROFIT, CHANCE OF PROFIT (`—`, POP not computed),
+7. **Position Greeks (combined) strip** — a `PositionGreeks` bar between the leg panels and the
+   `StatsStrip` aggregates the legs into **net** greeks and a combined bid/ask. Net Δ/Γ/Θ/ν are the
+   signed sums (`side == short ? -qty : qty` times the per-contract greek). Combined bid/ask is the
+   position's executable net-debit range: `bid = Σ long·bid − Σ short·ask`, `ask = Σ long·ask − Σ
+   short·bid` (per-share; ×100 for dollars). It reads from the same `legGreeks` map the panels use, so
+   no extra fetch is needed.
+8. **StatsStrip** — NET DEBIT/CREDIT, MAX LOSS, MAX PROFIT, CHANCE OF PROFIT (`—`, POP not computed),
    BREAKEVENS. Live-computed via `POST /api/surface/stats` (250 ms debounce) from the current legs.
-8. **Analysis params (demoted)** — a slim toolbar for Time step, Spot range (%), Spot samples (Time (ET)
+9. **Analysis params (demoted)** — a slim toolbar for Time step, Spot range (%), Spot samples (Time (ET)
    lives in the Trade Date row).
-9. **Charts** — the 3D P&L/delta/gamma surfaces, on a **dark background** matching the theme
+10. **Charts** — the 3D P&L/delta/gamma surfaces, on a **dark background** matching the theme
    (`paper_bgcolor` `#04041F`, light axis ticks/grid). Shown in the **3D Theoretical** / **3D Real**
    tabs (Re-plot buttons; no separate "Back" button — the tabs handle navigation). The surface **Y axis
    is categorical** (numeric indices with timestamp tick labels), so non-trading hours (nights/weekends)
